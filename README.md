@@ -6,6 +6,7 @@ A highly customizable system monitor overlay for Windows, built with Python/PySi
 =========================
 
 A highly customizable system monitor overlay for Windows. Features movable widgets, custom layouts, themes, historical graphs, and full sensor support via LibreHardwareMonitor. Built with Python/PySide6.
+
 <img width="491" height="407" alt="testing" src="https://github.com/user-attachments/assets/30c8d946-c591-47b1-bbce-89031daf36a8" />
 
 

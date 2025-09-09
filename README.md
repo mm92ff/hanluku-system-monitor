@@ -3,6 +3,8 @@ A highly customizable system monitor overlay for Windows, built with Python/PySi
 
 
 <img width="491" height="407" alt="testing" src="https://github.com/user-attachments/assets/30c8d946-c591-47b1-bbce-89031daf36a8" />
+<img width="366" height="342" alt="dfsdfsdf" src="https://github.com/user-attachments/assets/e4130c3e-6e52-44f3-a113-161c9d59f6ae" />
+<img width="809" height="459" alt="fdffsffdsfdf" src="https://github.com/user-attachments/assets/0882c586-0702-44fd-97ab-32a67ee6203d" />
 
 
 --- Features & Usage ---

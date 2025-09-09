@@ -80,4 +80,5 @@ This project is licensed under the Mozilla Public License 2.0.
 --- Notes ---
 
 - When the font is switched for Retina displays, or when many widgets are frequently updated, memory usage increases to 250 MB. To reduce alerts from the Performance Manager, set a new baseline in Configuration ► Performance Settings... or deactivate it.
--For HDD temperatures, the program must be started with administrator rights."
+  
+- For HDD temperatures, the program must be started with administrator rights."

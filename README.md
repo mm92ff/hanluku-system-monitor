@@ -1,7 +1,6 @@
 # hanluku-system-monitor
 A highly customizable system monitor overlay for Windows, built with Python/PySide6. It features movable and groupable widgets, custom layouts, themes, historical data graphs, and full sensor support via LibreHardwareMonitor.
 
-A highly customizable system monitor overlay for Windows. Features movable widgets, custom layouts, themes, historical graphs, and full sensor support via LibreHardwareMonitor. Built with Python/PySide6.
 
 <img width="491" height="407" alt="testing" src="https://github.com/user-attachments/assets/30c8d946-c591-47b1-bbce-89031daf36a8" />
 
@@ -80,4 +79,5 @@ This project is licensed under the Mozilla Public License 2.0.
 
 --- Notes ---
 
-"When the font is switched for Retina displays, or when many widgets are frequently updated, memory usage increases to 250 MB. To reduce alerts from the Performance Manager, set a new baseline in Configuration ► Performance Settings... or deactivate it."
+- When the font is switched for Retina displays, or when many widgets are frequently updated, memory usage increases to 250 MB. To reduce alerts from the Performance Manager, set a new baseline in Configuration ► Performance Settings... or deactivate it.
+-For HDD temperatures, the program must be started with administrator rights."

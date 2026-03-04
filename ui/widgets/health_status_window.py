@@ -1,16 +1,20 @@
 # ui/widgets/health_status_window.py
 import datetime
-import json
 import logging
 from typing import Any, Dict
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (QHeaderView, QHBoxLayout, QPushButton,
                                QStackedWidget, QTextEdit, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout)
 
-from .base_window import SafeWindow
+from .base_window import (
+    SafeWindow,
+    configure_dialog_layout,
+    configure_dialog_window,
+    style_dialog_button,
+)
 
 class HealthStatusWindow(SafeWindow):
     """Fenster zur Anzeige des System-Zustands, jetzt mehrsprachig und robuster."""
@@ -26,17 +30,16 @@ class HealthStatusWindow(SafeWindow):
         except AttributeError:
             self.setWindowIcon(QIcon())
 
-        self.setMinimumSize(600, 400)
-        self.resize(800, 600)
+        configure_dialog_window(self, 800, 600, min_width=600, min_height=400)
         self.show_full_details = False
         self.last_data: Dict[str, Any] = {}
 
         self.init_ui()
-        QTimer.singleShot(50, self.update_report)
 
     def init_ui(self):
         """Initialisiert die Benutzeroberfläche."""
         layout = QVBoxLayout(self)
+        configure_dialog_layout(layout)
         self.stacked_widget = QStackedWidget()
         layout.addWidget(self.stacked_widget)
 
@@ -55,14 +58,17 @@ class HealthStatusWindow(SafeWindow):
         button_layout = QHBoxLayout()
         self.detail_toggle_btn = QPushButton()
         self.detail_toggle_btn.clicked.connect(self.toggle_detail_view)
+        style_dialog_button(self.detail_toggle_btn, "compact")
         button_layout.addWidget(self.detail_toggle_btn)
         button_layout.addStretch()
 
         refresh_btn = QPushButton(self.translator.translate("win_shared_button_refresh"))
         refresh_btn.clicked.connect(self.update_report)
+        style_dialog_button(refresh_btn, "accent")
         button_layout.addWidget(refresh_btn)
         close_btn = QPushButton(self.translator.translate("win_shared_button_close"))
         close_btn.clicked.connect(self.close_safely)
+        style_dialog_button(close_btn, "secondary")
         button_layout.addWidget(close_btn)
         layout.addLayout(button_layout)
 
@@ -82,18 +88,29 @@ class HealthStatusWindow(SafeWindow):
     def update_report(self):
         """Lädt neue Daten und aktualisiert die aktuelle Ansicht."""
         try:
-            if not (self.main_app.worker and hasattr(self.main_app.worker, 'get_health_report')):
-                self.text_area.setText(self.translator.translate("win_health_worker_unavailable"))
+            if not self.main_app.worker:
+                self._show_status_message(self.translator.translate("win_health_worker_unavailable"))
                 return
-            self.last_data = self.main_app.worker.get_health_report()
+
+            self.last_data = self.main_app.get_latest_health_report()
             self._update_view()
         except Exception:
             logging.exception("Fehler beim Abrufen des Health-Reports vom Worker.")
-            self.text_area.setText(self.translator.translate("win_health_error_fetching"))
-            self.last_data = {}
+            self._show_status_message(self.translator.translate("win_health_error_fetching"))
+
+    def _show_status_message(self, message: str):
+        self.last_data = {}
+        self.tree_widget.clear()
+        self.text_area.setText(message)
+        self.stacked_widget.setCurrentWidget(self.text_area)
 
     def _update_view(self):
         """Aktualisiert die Anzeige basierend auf dem aktuellen Modus."""
+        if not self.last_data:
+            self.text_area.setText(self.translator.translate("win_health_no_data"))
+            self.stacked_widget.setCurrentWidget(self.text_area)
+            return
+
         if self.show_full_details:
             self.tree_widget.clear()
             self._populate_tree(self.tree_widget, self.last_data)
@@ -161,7 +178,19 @@ class HealthStatusWindow(SafeWindow):
                 increase_str = f"+{increase:.1f}" if increase and increase >= 0 else f"{increase or 0:.1f}"
                 lines.append(f"{self.translator.translate('win_health_memory_usage'):<17} {ms.get('current_memory_mb', 0):.1f} MB ({self.translator.translate('win_health_change')} {increase_str} MB)")
 
-        if sm := data.get('sensor_manager'): 
-            lines.append(f"{self.translator.translate('win_health_sensor_status'):<17} {len(sm.get('permanently_failed_sensors', []))} {self.translator.translate('win_health_failed_sensors')} ({self.translator.translate('win_health_success_rate')} {sm.get('success_rate_percent', 0):.1f}%)")
+        if sm := data.get('sensor_manager'):
+            disabled_sensors = sm.get('temporarily_disabled_sensors', [])
+            lines.append(f"{self.translator.translate('win_health_sensor_status'):<17} {len(disabled_sensors)} {self.translator.translate('win_health_disabled_sensors')} ({self.translator.translate('win_health_success_rate')} {sm.get('success_rate_percent', 0):.1f}%)")
             
         return "\n".join(lines)
+
+    def export_language_refresh_state(self) -> dict:
+        return {
+            "show_full_details": self.show_full_details,
+            "last_data": dict(self.last_data),
+        }
+
+    def apply_language_refresh_state(self, state: dict):
+        self.show_full_details = state.get("show_full_details", self.show_full_details)
+        self.last_data = dict(state.get("last_data", self.last_data))
+        self.update_report()

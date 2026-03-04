@@ -4,7 +4,12 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout
 from PySide6.QtGui import QIcon, QFont, QTextCursor
-from .base_window import SafeWindow
+from .base_window import (
+    SafeWindow,
+    configure_dialog_layout,
+    configure_dialog_window,
+    style_dialog_button,
+)
 
 if TYPE_CHECKING:
     from core.main_window import SystemMonitor
@@ -20,7 +25,7 @@ class HelpWindow(SafeWindow):
         self.translator = main_app.translator
         
         self.setWindowTitle(self.translator.translate("win_title_help"))
-        self.setMinimumSize(700, 800)
+        configure_dialog_window(self, 700, 800)
         
         try:
             self.setWindowIcon(self.main_app.tray_icon_manager.tray_icon.icon())
@@ -33,6 +38,7 @@ class HelpWindow(SafeWindow):
     def _setup_ui(self):
         """Erstellt die Benutzeroberfläche des Fensters."""
         layout = QVBoxLayout(self)
+        configure_dialog_layout(layout)
         
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
@@ -43,6 +49,7 @@ class HelpWindow(SafeWindow):
         button_layout.addStretch()
         close_button = QPushButton(self.translator.translate("win_shared_button_close"))
         close_button.clicked.connect(self.close_safely)
+        style_dialog_button(close_button, "secondary")
         button_layout.addWidget(close_button)
         
         layout.addLayout(button_layout)
@@ -116,6 +123,7 @@ class HelpWindow(SafeWindow):
             <li><b>{t("help_other_item2_title")}:</b> {t("help_other_item2_desc")}</li>
             <li><b>{t("help_other_item3_title")}:</b> {t("help_other_item3_desc")}</li>
             <li><b>{t("help_other_item4_title")}:</b> {t("help_other_item4_desc")}</li>
+            <li><b>{t("help_other_item5_title")}:</b> {t("help_other_item5_desc")}</li>
         </ul>
 
         <br><hr><br>

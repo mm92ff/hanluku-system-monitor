@@ -5,14 +5,16 @@ from typing import Dict, Any
 from pathlib import Path
 from config.config import save_atomic
 
-def save_layout(state: Dict[str, Any], config_dir: str | Path):
+def save_layout(state: Dict[str, Any], config_dir: str | Path) -> bool:
     """Speichert den Zustand der detachable Widgets atomar in einer JSON-Datei."""
     # KORREKTUR: Verwendet pathlib für konsistente Pfad-Objekte
     file_path = Path(config_dir) / 'detachable_layout.json'
     if save_atomic(state, file_path):
         logging.debug(f"Detachable-Layout gespeichert in: {file_path}")
-    else:
-        logging.error(f"Fehler beim Speichern des Detachable-Layouts nach: {file_path}")
+        return True
+
+    logging.error(f"Fehler beim Speichern des Detachable-Layouts nach: {file_path}")
+    return False
 
 def load_layout(config_dir: str | Path) -> Dict[str, Any]:
     """Lädt den Zustand der detachable Widgets aus einer JSON-Datei."""

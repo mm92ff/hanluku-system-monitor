@@ -1,6 +1,7 @@
 # monitoring/hardware_monitor.py
 import time
 import logging
+import threading
 from typing import Dict, Any, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -20,6 +21,7 @@ class HardwareMonitorWorker(QObject):
     zu sammeln, ohne die UI zu blockieren.
     """
     data_updated = Signal(dict)
+    health_report_updated = Signal(dict)
     sensor_error = Signal(str, str)
     memory_warning = Signal(dict, float)
 
@@ -29,6 +31,9 @@ class HardwareMonitorWorker(QObject):
         self.settings = context.get_settings()
         
         self._is_running = True
+        self._stop_event = threading.Event()
+        self._pending_settings_lock = threading.Lock()
+        self._pending_settings: dict[str, Any] = {}
         self.sleep_duration_sec = interval_ms / 1000.0
         
         # Manager-Instanzen aus dem Kontext holen
@@ -44,6 +49,22 @@ class HardwareMonitorWorker(QObject):
         self.performance_log_interval = 100
         
         logging.info(f"HardwareMonitorWorker initialisiert - LHM: {self.lhm_support}, Intervall: {self.sleep_duration_sec}s")
+
+    def queue_setting_update(self, key: str, value: Any):
+        """Merkt Änderungen thread-sicher vor, damit der Worker sie selbst anwenden kann."""
+        with self._pending_settings_lock:
+            self._pending_settings[key] = value
+
+    def _consume_pending_setting_updates(self):
+        """Wendet vorgemerkte Settings gesammelt im Worker-Thread an."""
+        with self._pending_settings_lock:
+            if not self._pending_settings:
+                return
+            pending = dict(self._pending_settings)
+            self._pending_settings.clear()
+
+        for key, value in pending.items():
+            self.update_setting(key, value)
 
     @Slot(str, object)
     def update_setting(self, key: str, value: Any):
@@ -65,9 +86,10 @@ class HardwareMonitorWorker(QObject):
         
         prev_time = time.time()
 
-        while self._is_running:
+        while not self._stop_event.is_set():
             start_time = time.time()
             try:
+                self._consume_pending_setting_updates()
                 current_time = time.time()
                 elapsed = max(0.1, current_time - prev_time)
                 prev_time = current_time
@@ -86,14 +108,18 @@ class HardwareMonitorWorker(QObject):
                 # Performance und Speicher überwachen
                 self.performance_tracker.track_update_performance(time.time() - start_time)
                 if memory_mb := self.performance_tracker.check_memory_usage():
-                    for warning in self.performance_tracker.get_recent_memory_warnings(5):
+                    for warning in self.performance_tracker.consume_pending_memory_warnings():
                         self.memory_warning.emit(warning, memory_mb)
+
+                self.health_report_updated.emit(self.get_health_report())
                 
                 stats = self.performance_tracker.get_performance_stats()
                 if stats['update_count'] > 0 and stats['update_count'] % self.performance_log_interval == 0:
                     logging.info(f"Performance: Avg={stats['avg_update_time_ms']:.1f}ms, Max={stats['max_update_time_ms']:.1f}ms")
                     
-                time.sleep(max(0, self.sleep_duration_sec - (time.time() - start_time)))
+                remaining_sleep = max(0, self.sleep_duration_sec - (time.time() - start_time))
+                if self._stop_event.wait(remaining_sleep):
+                    break
 
             except Exception:
                 self.consecutive_errors += 1
@@ -101,14 +127,18 @@ class HardwareMonitorWorker(QObject):
                 if self.consecutive_errors >= self.max_consecutive_errors:
                     logging.critical("Maximale Anzahl aufeinanderfolgender Fehler erreicht. Worker wird gestoppt.")
                     self.sensor_error.emit("Kritisch", "Worker wegen wiederholter Fehler gestoppt.")
-                    self._is_running = False
-                time.sleep(2.0)
+                    self._stop_event.set()
+                    break
+                if self._stop_event.wait(2.0):
+                    break
         
+        self._is_running = False
         logging.info("Hardware Monitor Worker beendet.")
 
     def stop(self):
         """Stoppt den Worker sicher."""
         self._is_running = False
+        self._stop_event.set()
 
     def get_health_report(self) -> Dict[str, Any]:
         """Sammelt Gesundheitsberichte von allen Managern."""

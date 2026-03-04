@@ -8,6 +8,8 @@ from .constants import (
 )
 
 DEFAULT_SETTINGS_BASE = {
+    "language": "german",
+
     # Fenster & Layout
     "metric_order": DEFAULT_METRIC_ORDER.copy(),
     "geometry": DEFAULT_GEOMETRY.copy(),
@@ -135,6 +137,7 @@ DEFAULT_SETTINGS_BASE = {
     "tray_blink_duration_ms": DefaultTrayIcon.BLINK_DURATION_MS,
 
     # Logging-Einstellungen
+    "log_level": "INFO",
     "log_max_size_mb": DefaultLogging.MAX_SIZE_MB,
     "log_backup_count": DefaultLogging.BACKUP_COUNT,
 
@@ -145,6 +148,8 @@ DEFAULT_SETTINGS_BASE = {
     "perf_slow_update_threshold_sec": 5,
     "perf_gc_threshold_updates": 50,
     "perf_mem_baseline_mb": 0.0,
+    "perf_mem_baseline_process_pid": None,
+    "perf_mem_baseline_process_start_time": None,
     "perf_show_warnings": True,
 
     # NEU: Monitoring-Standardwerte

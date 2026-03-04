@@ -1,0 +1,17 @@
+__pycache__/
+dist/
+tools/
+tests/
+.pytest_cache/
+*.pyc
+*.spec
+*.bat
+!build_exe.bat
+!release_to_github.bat
+!add_gh_to_path.bat
+*.log
+client_secret*.json
+test.bmp
+testing.bmp
+testing3.bmp
+pytest.ini

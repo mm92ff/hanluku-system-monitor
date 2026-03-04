@@ -14,6 +14,7 @@ class AppInfo:
     DISPLAY_NAME = "Hanluku-system-monitor"
     VERSION = "1.0"
     COMPANY = "Hanluku"
+    DLL_DIRECTORY_ENV_VAR = "HANLUKU_DLL_DIR"
     
     # Windows-spezifische IDs
     APP_USER_MODEL_ID = f"{COMPANY}.{NAME}"
@@ -22,6 +23,7 @@ class AppInfo:
 
 class SettingsKey(Enum):
     """Zentralisiert alle Schlüssel für das Settings-Dictionary."""
+    LANGUAGE = "language"
     METRIC_ORDER = "metric_order"
     GEOMETRY = "geometry"
     BACKGROUND_ALPHA = "background_alpha"
@@ -123,12 +125,15 @@ class SettingsKey(Enum):
     TRAY_BLINK_DURATION_MS = "tray_blink_duration_ms"
     LOG_MAX_SIZE_MB = "log_max_size_mb"
     LOG_BACKUP_COUNT = "log_backup_count"
+    LOG_LEVEL = "log_level"
     PERF_MEM_THRESHOLD_MB = "perf_mem_threshold_mb"
     PERF_MEM_CHECK_INTERVAL_SEC = "perf_mem_check_interval_sec"
     PERF_MEM_TREND_THRESHOLD_MB = "perf_mem_trend_threshold_mb"
     PERF_SLOW_UPDATE_THRESHOLD_SEC = "perf_slow_update_threshold_sec"
     PERF_GC_THRESHOLD_UPDATES = "perf_gc_threshold_updates"
     PERF_MEM_BASELINE_MB = "perf_mem_baseline_mb"
+    PERF_MEM_BASELINE_PROCESS_PID = "perf_mem_baseline_process_pid"
+    PERF_MEM_BASELINE_PROCESS_START_TIME = "perf_mem_baseline_process_start_time"
     PERF_SHOW_WARNINGS = "perf_show_warnings"
     
     # Monitoring-Einstellungen

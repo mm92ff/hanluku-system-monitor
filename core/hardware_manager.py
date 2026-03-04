@@ -1,11 +1,15 @@
 # core/hardware_manager.py
 import logging
+import os
+import sys
 import traceback
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple
 
 from utils.system_utils import psutil, PSUTIL_AVAILABLE
 from config.config import CONFIG_DIR
+from config.constants import AppInfo
 from .sensor_cache import load_sensor_cache, save_sensor_cache
 from .sensor_mapping import find_sensor, diagnose_sensor_matching, get_available_sensors_for_hardware
 
@@ -16,13 +20,29 @@ except ImportError:
     LHM_SUPPORT = False
 
 
+@dataclass(frozen=True)
+class HardwareOperationResult:
+    success: bool
+    message: str
+    details: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class HardwareSelectionState:
+    cpu_identifier: str
+    gpu_identifier: str
+
+
 class HardwareManager:
     """Verwaltet LibreHardwareMonitor-Integration und grundlegende Hardware-Abfragen."""
+    REQUIRED_DLLS = ("HidSharp.dll", "LibreHardwareMonitorLib.dll")
 
     def __init__(self):
-        self.lhm_support = LHM_SUPPORT
+        self.pythonnet_available = LHM_SUPPORT
+        self.lhm_support = False
         self.computer = None
         self.lhm_error: str | None = None
+        self._dll_directory_handle = None
 
         # Sensor-Zuordnungen
         self.cpus: List[Any] = []  # GEÄNDERT: Liste für mehrere CPUs
@@ -31,6 +51,8 @@ class HardwareManager:
         self.gpu_sensors: Dict[str, Any] = {}
         self.storage_sensors: Dict[str, Any] = {}
         self.storage_display_names: Dict[str, str] = {}
+        self.selected_cpu_id = "auto"
+        self.selected_gpu_id = "auto"
 
         # Cache-System
         self.sensor_cache = load_sensor_cache()
@@ -41,27 +63,95 @@ class HardwareManager:
         self.initialization_log = []
         self.failed_sensors: Dict[str, Any] = {}
         self.hardware_detected: Dict[str, int] = {}
+        self.last_operation_result = HardwareOperationResult(True, "Hardware manager bereit.")
 
-        if self.lhm_support:
+        if self.pythonnet_available:
             self._initialize_lhm()
+        else:
+            self.lhm_error = "pythonnet/clr konnte nicht importiert werden."
+            logging.error(self.lhm_error)
+            self.initialization_log.append(f"FEHLER: {self.lhm_error}")
 
     @property
     def gpu_supported(self) -> bool:
         """Prüft dynamisch, ob GPU-Monitoring aktiv ist."""
         return bool(self.gpus and self.gpu_sensors)
 
+    @classmethod
+    def _get_dll_search_directories(cls) -> List[Path]:
+        """Ermittelt mögliche Suchpfade für die benötigten .NET-DLLs."""
+        directories: List[Path] = []
+
+        if env_dir := os.environ.get(AppInfo.DLL_DIRECTORY_ENV_VAR):
+            directories.append(Path(env_dir))
+
+        if getattr(sys, "frozen", False):
+            executable_dir = Path(sys.executable).resolve().parent
+            directories.extend([executable_dir / "libs", executable_dir])
+
+            if meipass := getattr(sys, "_MEIPASS", None):
+                meipass_dir = Path(meipass)
+                directories.extend([meipass_dir / "libs", meipass_dir])
+
+        project_root = Path(__file__).resolve().parent.parent
+        directories.extend([project_root / "libs", project_root])
+
+        unique_directories: List[Path] = []
+        seen = set()
+        for directory in directories:
+            normalized = str(directory.resolve(strict=False))
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_directories.append(directory)
+        return unique_directories
+
+    @classmethod
+    def _resolve_required_dll_paths(
+        cls,
+        search_directories: Optional[List[Path]] = None,
+    ) -> Tuple[Optional[Dict[str, Path]], List[Path]]:
+        """Liefert die Pfade aller benötigten DLLs aus einem gemeinsamen Verzeichnis."""
+        candidate_directories = search_directories or cls._get_dll_search_directories()
+        for directory in candidate_directories:
+            dll_paths = {
+                dll_name: directory / dll_name
+                for dll_name in cls.REQUIRED_DLLS
+            }
+            if all(path.exists() for path in dll_paths.values()):
+                return dll_paths, candidate_directories
+        return None, candidate_directories
+
+    def _add_windows_dll_directory(self, dll_directory: Path):
+        """Registriert unter Windows einen DLL-Suchpfad für Abhängigkeiten."""
+        if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
+            return None
+        try:
+            return os.add_dll_directory(str(dll_directory))
+        except OSError:
+            logging.debug("Konnte DLL-Suchpfad nicht registrieren: %s", dll_directory, exc_info=True)
+            return None
+
     def _initialize_lhm(self):
         """Initialisiert LHM mit verbesserter Fehlerbehandlung und Diagnose."""
         try:
-            project_root = Path(__file__).resolve().parent.parent
-            dll_path = project_root / "libs" / "LibreHardwareMonitorLib.dll"
-            
-            if not dll_path.exists():
-                self.lhm_error = f"LibreHardwareMonitorLib.dll nicht gefunden: {dll_path}"
+            dll_paths, searched_directories = self._resolve_required_dll_paths()
+
+            if not dll_paths:
+                searched = ", ".join(str(path) for path in searched_directories)
+                self.lhm_error = (
+                    "Erforderliche LHM-DLLs nicht gefunden. "
+                    f"Benötigt: {', '.join(self.REQUIRED_DLLS)} | Gesucht in: {searched}"
+                )
                 logging.error(self.lhm_error)
+                self.initialization_log.append(f"FEHLER: {self.lhm_error}")
                 return
 
-            clr.AddReference(str(dll_path))
+            dll_directory = next(iter(dll_paths.values())).parent
+            self._dll_directory_handle = self._add_windows_dll_directory(dll_directory)
+
+            clr.AddReference(str(dll_paths["HidSharp.dll"]))
+            clr.AddReference(str(dll_paths["LibreHardwareMonitorLib.dll"]))
             from LibreHardwareMonitor.Hardware import Computer
 
             self.computer = Computer()
@@ -88,8 +178,12 @@ class HardwareManager:
                 save_sensor_cache(self.sensor_cache)
                 
             self._log_final_status()
+            self.lhm_error = None
+            self.lhm_support = True
 
         except Exception as e:
+            self.computer = None
+            self.lhm_support = False
             self.lhm_error = f"Fehler bei LHM-Initialisierung: {e}"
             logging.error(f"{self.lhm_error}\n{traceback.format_exc()}")
             self.initialization_log.append(f"FEHLER: {self.lhm_error}")
@@ -163,7 +257,7 @@ class HardwareManager:
         self.initialization_log.append(f"  Mainboard/Controller-Sensoren werden analysiert: {mobo_hw.Name}")
         
         sensor_count = len(get_available_sensors_for_hardware(mobo_hw))
-        self.initialization_log.append(f"    ✅ {sensor_count} Sensoren gefunden (verfügbar im Explorer).")
+        self.initialization_log.append(f"    {sensor_count} Sensoren gefunden (verfügbar im Explorer).")
 
     def _process_gpu_with_diagnostics(self, gpu_hw):
         """GPU-Verarbeitung mit detaillierter Diagnose."""
@@ -205,9 +299,9 @@ class HardwareManager:
                 failed_sensors.append(key)
                 self.failed_sensors[f"{gpu_hw.Name}_{canonical_name}"] = {'hardware': gpu_hw.Name, 'sensor_type': canonical_name, 'debug_info': debug_info}
         
-        self.initialization_log.append(f"    ✅ Gefundene Sensoren: {found_sensors}")
+        self.initialization_log.append(f"    Gefundene Sensoren: {found_sensors}")
         if failed_sensors:
-            self.initialization_log.append(f"    ❌ Fehlgeschlagene Sensoren: {failed_sensors}")
+            self.initialization_log.append(f"    Fehlgeschlagene Sensoren: {failed_sensors}")
         
         if temp_gpu_sensors:
             self.gpu_sensors = temp_gpu_sensors
@@ -236,16 +330,16 @@ class HardwareManager:
         if cached_id := self.sensor_cache.get(cache_key):
             for sensor in hardware_item.Sensors:
                 if str(sensor.Identifier) == cached_id:
-                    debug_info.append(f"📋 Aus Cache gefunden: {sensor.Name}")
+                    debug_info.append(f"Aus Cache gefunden: {sensor.Name}")
                     return sensor
-            debug_info.append(f"⚠️  Cache-Eintrag ungültig, führe neue Suche durch")
+            debug_info.append(f"Cache-Eintrag ungültig, führe neue Suche durch")
         
         sensor = find_sensor(canonical_name, hardware_item, debug_info)
         
         if sensor:
             self.sensor_cache[cache_key] = str(sensor.Identifier)
             self.cache_updated = True
-            debug_info.append(f"💾 In Cache gespeichert")
+            debug_info.append("In Cache gespeichert")
             return sensor
         
         return None
@@ -253,6 +347,7 @@ class HardwareManager:
     # NEUE METHODE
     def update_selected_cpu_sensors(self, selected_cpu_id: str) -> str:
         """Findet die ausgewählte CPU und setzt ihren Temperatur-Sensor als aktiv."""
+        self.selected_cpu_id = selected_cpu_id
         target_cpu = None
 
         if selected_cpu_id == "auto":
@@ -265,6 +360,10 @@ class HardwareManager:
                 return selected_cpu_id
         else:
             target_cpu = next((cpu for cpu in self.cpus if str(cpu.Identifier) == selected_cpu_id), None)
+
+        if not target_cpu and selected_cpu_id != "auto" and self.cpus:
+            logging.warning(f"CPU mit ID '{selected_cpu_id}' nicht gefunden. Fallback auf automatische Auswahl.")
+            return self.update_selected_cpu_sensors("auto")
 
         if not target_cpu:
             logging.warning(f"CPU mit ID '{selected_cpu_id}' nicht gefunden.")
@@ -292,6 +391,8 @@ class HardwareManager:
 
     def update_selected_gpu_sensors(self, selected_gpu_id: str) -> str:
         """Aktualisiert die aktiven GPU-Sensoren für eine spezifische GPU."""
+        self.selected_gpu_id = selected_gpu_id
+        self.gpu_sensors.clear()
         target_gpu = None
         
         if selected_gpu_id == "auto":
@@ -304,18 +405,56 @@ class HardwareManager:
         else:
             target_gpu = next((gpu for gpu in self.gpus if str(gpu.Identifier) == selected_gpu_id), None)
 
+        if not target_gpu and selected_gpu_id != "auto" and self.gpus:
+            logging.warning(f"GPU mit ID '{selected_gpu_id}' nicht gefunden. Fallback auf automatische Auswahl.")
+            return self.update_selected_gpu_sensors("auto")
+
         if not target_gpu:
             logging.warning(f"GPU mit ID '{selected_gpu_id}' nicht gefunden")
             return selected_gpu_id
 
         logging.info(f"Lade Sensoren für ausgewählte GPU: {target_gpu.Name}")
-        self.gpu_sensors.clear()
         self._process_gpu_with_diagnostics(target_gpu)
         
         if self.cache_updated:
             save_sensor_cache(self.sensor_cache)
             
         return str(target_gpu.Identifier)
+
+    def apply_hardware_selection(self, selected_cpu_id: str, selected_gpu_id: str) -> HardwareSelectionState:
+        """Aktiviert CPU- und GPU-Auswahl in einem konsistenten Schritt."""
+        resolved_cpu_id = self.update_selected_cpu_sensors(selected_cpu_id)
+        resolved_gpu_id = self.update_selected_gpu_sensors(selected_gpu_id)
+        return HardwareSelectionState(
+            cpu_identifier=resolved_cpu_id,
+            gpu_identifier=resolved_gpu_id,
+        )
+
+    def _set_operation_result(self, success: bool, message: str, **details: Any) -> HardwareOperationResult:
+        """Speichert das Ergebnis der letzten Hardware-Lifecycle-Operation."""
+        self.last_operation_result = HardwareOperationResult(
+            success=success,
+            message=message,
+            details=details,
+        )
+        return self.last_operation_result
+
+    def _clear_detected_state(self):
+        """Setzt erkannte Hardware und Diagnosezustand zurÃ¼ck."""
+        self.cpus.clear()
+        self.cpu_sensor = None
+        self.gpus.clear()
+        self.gpu_sensors.clear()
+        self.storage_sensors.clear()
+        self.storage_display_names.clear()
+        self.initialization_log.clear()
+        self.failed_sensors.clear()
+        self.hardware_detected.clear()
+
+    def _restore_selected_sensors(self):
+        """Aktiviert die zuletzt ausgewÃ¤hlten CPU- und GPU-Sensoren erneut."""
+        self.update_selected_cpu_sensors(self.selected_cpu_id)
+        self.update_selected_gpu_sensors(self.selected_gpu_id)
 
     def _log_final_status(self):
         """Erweiterte Status-Ausgabe mit Diagnose-Informationen."""
@@ -461,56 +600,58 @@ class HardwareManager:
                 
         return f"Hardware '{hardware_name}' nicht gefunden"
 
-    def reset_sensor_cache(self) -> bool:
-        """Setzt den Sensor-Cache zurück und führt neue Erkennung durch."""
+    def redetect_hardware(self, reset_cache: bool = False) -> HardwareOperationResult:
+        """FÃ¼hrt eine neue Hardware-Erkennung aus und liefert ein strukturiertes Ergebnis."""
+        if not self.computer:
+            message = "Aktualisierung nicht mÃ¶glich, LHM Computer nicht initialisiert."
+            logging.error(message)
+            return self._set_operation_result(False, message, reset_cache=reset_cache)
+
         try:
-            old_fingerprint = self.sensor_cache.get('_hardware_fingerprint', '')
-            self.sensor_cache = {'_hardware_fingerprint': old_fingerprint}
-            
-            self.cpus.clear() # GEÄNDERT
-            self.cpu_sensor = None
-            self.gpu_sensors = {}
-            self.storage_sensors = {}
-            self.storage_display_names = {}
-            self.failed_sensors = {}
-            
-            if self.computer:
-                self._detect_hardware_with_diagnostics()
-                save_sensor_cache(self.sensor_cache)
-                logging.info("Sensor-Cache zurückgesetzt und Hardware neu erkannt")
-                return True
+            if reset_cache:
+                old_fingerprint = self.sensor_cache.get('_hardware_fingerprint', '')
+                self.sensor_cache = {'_hardware_fingerprint': old_fingerprint}
+                self.cache_updated = False
+                logging.info("Sensor-Cache wird zurÃ¼ckgesetzt und Hardware neu erkannt.")
             else:
-                logging.error("Kein LibreHardwareMonitor Computer-Objekt verfügbar")
-                return False
-                
+                logging.info("Aktualisiere Hardware- und Sensor-Erkennung...")
+
+            self._clear_detected_state()
+            self._detect_hardware_with_diagnostics()
+            self._restore_selected_sensors()
+
+            if reset_cache or self.cache_updated:
+                save_sensor_cache(self.sensor_cache)
+                self.cache_updated = False
+
+            self._log_final_status()
+            message = (
+                "Sensor-Cache zurÃ¼ckgesetzt und Hardware neu erkannt."
+                if reset_cache else
+                "Hardware-Konfiguration wurde aktualisiert."
+            )
+            return self._set_operation_result(
+                True,
+                message,
+                reset_cache=reset_cache,
+                hardware_detected=dict(self.hardware_detected),
+            )
         except Exception as e:
-            logging.error(f"Fehler beim Zurücksetzen des Sensor-Cache: {e}")
-            return False
+            message = (
+                f"Fehler beim ZurÃ¼cksetzen des Sensor-Cache: {e}"
+                if reset_cache else
+                f"Fehler bei der Hardware-Aktualisierung: {e}"
+            )
+            logging.exception(message)
+            return self._set_operation_result(False, message, reset_cache=reset_cache)
+
+    def reset_sensor_cache(self) -> bool:
+        """Setzt den Sensor-Cache zur?ck und f?hrt neue Erkennung durch."""
+        return self.redetect_hardware(reset_cache=True).success
 
     def refresh_hardware_detection(self):
-        """Führt eine neue Hardware-Erkennung durch, ohne den Cache zu löschen."""
-        if not self.computer:
-            logging.error("Aktualisierung nicht möglich, LHM Computer nicht initialisiert.")
-            return
-
-        logging.info("Aktualisiere Hardware- und Sensor-Erkennung...")
-        self.cpus.clear() # GEÄNDERT
-        self.cpu_sensor = None
-        self.gpus.clear()
-        self.gpu_sensors.clear()
-        self.storage_sensors.clear()
-        self.storage_display_names.clear()
-        self.initialization_log.clear()
-        self.failed_sensors.clear()
-        self.hardware_detected.clear()
-
-        self._detect_hardware_with_diagnostics()
-
-        if self.cache_updated:
-            save_sensor_cache(self.sensor_cache)
-            self.cache_updated = False
-        
-        self._log_final_status()
+        """F?hrt eine neue Hardware-Erkennung durch, ohne den Cache zu l?schen."""
+        return self.redetect_hardware(reset_cache=False).success
 
     def test_custom_sensor(self, identifier: str) -> Optional[float]:
         """Testet einen einzelnen Sensor anhand seines Identifiers und gibt den Wert zurück."""

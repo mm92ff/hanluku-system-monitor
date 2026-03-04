@@ -133,6 +133,23 @@ def similarity_score(a: str, b: str) -> float:
     """Berechnet die Ähnlichkeit zwischen zwei Strings (0.0 - 1.0)."""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
+
+def is_hardware_compatible(canonical_name: str, hardware_item) -> bool:
+    """Prüft, ob ein Hardware-Typ grundsätzlich zum Sensor-Mapping passt."""
+    mapping = SENSOR_MAP.get(canonical_name)
+    if not mapping:
+        return True
+
+    expected_types = [hw_type.lower() for hw_type in mapping.get('hardware_types', [])]
+    if not expected_types:
+        return True
+
+    actual_type = str(getattr(hardware_item, 'HardwareType', '')).lower()
+    return any(
+        expected in actual_type or actual_type in expected
+        for expected in expected_types
+    )
+
 def find_sensor(canonical_name: str, hardware_item, debug_info: Optional[List[str]] = None) -> Optional[object]:
     """
     Findet den besten Sensor für einen kanonischen Namen, indem ein Hardware-Element 
@@ -143,7 +160,7 @@ def find_sensor(canonical_name: str, hardware_item, debug_info: Optional[List[st
 
     mapping = SENSOR_MAP.get(canonical_name)
     if not mapping:
-        debug_info.append(f"❌ Kein Mapping für '{canonical_name}' in SENSOR_MAP gefunden")
+        debug_info.append(f"Kein Mapping fuer '{canonical_name}' in SENSOR_MAP gefunden")
         return None
 
     search_terms = mapping['search_terms']
@@ -151,7 +168,7 @@ def find_sensor(canonical_name: str, hardware_item, debug_info: Optional[List[st
     priority_terms = mapping.get('priority_terms', [])
     sensor_type_target = mapping['sensor_type'].lower()
     
-    debug_info.append(f"🔍 Starte rekursive Suche nach '{canonical_name}' (Typ: {sensor_type_target}) auf '{hardware_item.Name}'")
+    debug_info.append(f"Suche: Starte rekursive Suche nach '{canonical_name}' (Typ: {sensor_type_target}) auf '{hardware_item.Name}'")
     
     candidates = []
     
@@ -206,23 +223,23 @@ def find_sensor(canonical_name: str, hardware_item, debug_info: Optional[List[st
     search_recursively(hardware_item)
 
     if not candidates:
-        debug_info.append(f"   ❌ Keine passenden Kandidaten für '{canonical_name}' im gesamten Baum von '{hardware_item.Name}' gefunden.")
+        debug_info.append(f"   Keine passenden Kandidaten fuer '{canonical_name}' im gesamten Baum von '{hardware_item.Name}' gefunden.")
         logging.warning(f"Sensor '{canonical_name}' konnte auf '{hardware_item.Name}' oder dessen Unter-Hardware nicht gefunden werden.")
         return None
     
     candidates.sort(key=lambda x: (x['is_priority'], x['score']), reverse=True)
     
     best_candidate = candidates[0]
-    debug_info.append(f"   ✅ Bester Kandidat gefunden: '{best_candidate['name']}' (Score: {best_candidate['score']:.2f}, Begriff: '{best_candidate['term']}')")
+    debug_info.append(f"   Bester Kandidat gefunden: '{best_candidate['name']}' (Score: {best_candidate['score']:.2f}, Begriff: '{best_candidate['term']}')")
     
     if len(candidates) > 1:
-        debug_info.append(f"   📋 {len(candidates)-1} weitere Kandidaten gefunden, z.B.: '{candidates[1]['name']}' (Score: {candidates[1]['score']:.2f})")
+        debug_info.append(f"   {len(candidates)-1} weitere Kandidaten gefunden, z.B.: '{candidates[1]['name']}' (Score: {candidates[1]['score']:.2f})")
 
     logging.info(f"Sensor '{canonical_name}' erfolgreich auf '{hardware_item.Name}' gefunden: {best_candidate['name']}")
     return best_candidate['sensor']
 
 
-def get_available_sensors_for_hardware(hardware_item) -> List[Dict]:
+def get_available_sensors_for_hardware(hardware_item, recursive: bool = False, depth: int = 0) -> List[Dict]:
     """
     Hilfsfunktion für Debug: Gibt alle verfügbaren Sensoren einer Hardware zurück.
     """
@@ -232,8 +249,15 @@ def get_available_sensors_for_hardware(hardware_item) -> List[Dict]:
             'name': sensor.Name,
             'type': str(sensor.SensorType),
             'identifier': str(sensor.Identifier),
-            'value': sensor.Value
+            'value': sensor.Value,
+            'hardware_name': hardware_item.Name,
+            'depth': depth,
         })
+
+    if recursive:
+        for sub_hw in hardware_item.SubHardware:
+            sub_hw.Update()
+            sensors.extend(get_available_sensors_for_hardware(sub_hw, recursive=True, depth=depth + 1))
     return sensors
 
 def diagnose_sensor_matching(canonical_name: str, hardware_item) -> str:
@@ -241,20 +265,24 @@ def diagnose_sensor_matching(canonical_name: str, hardware_item) -> str:
     Detaillierte Diagnose für fehlgeschlagene Sensor-Zuordnungen.
     """
     debug_info = []
+    if not is_hardware_compatible(canonical_name, hardware_item):
+        debug_info.append(
+            f"Hinweis: Hardware-Typ '{hardware_item.HardwareType}' passt nicht zur erwarteten Kategorie fuer '{canonical_name}'."
+        )
     find_sensor(canonical_name, hardware_item, debug_info)
     
     result = f"=== SENSOR DIAGNOSE: {canonical_name} ===\n"
     result += f"Hardware: {hardware_item.Name} ({hardware_item.HardwareType})\n\n"
     
-    result += "🔍 Suchvorgang:\n"
+    result += "Suchvorgang:\n"
     for info in debug_info:
         result += f"{info}\n"
     result += "\n"
     
-    available_sensors = get_available_sensors_for_hardware(hardware_item)
-    result += f"📋 Verfügbare Sensoren auf '{hardware_item.Name}' ({len(available_sensors)}):\n"
+    available_sensors = get_available_sensors_for_hardware(hardware_item, recursive=True)
+    result += f"Verfuegbare Sensoren im Baum von '{hardware_item.Name}' ({len(available_sensors)}):\n"
     for sensor in available_sensors:
         value_str = f"{sensor['value']:.2f}" if sensor['value'] is not None else "N/A"
-        result += f"  - {sensor['name']} | Typ: {sensor['type']} | Wert: {value_str}\n"
+        result += f"  - [{sensor['hardware_name']}] {sensor['name']} | Typ: {sensor['type']} | Wert: {value_str}\n"
     
     return result

@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
-from config.constants import AppInfo
+from config.constants import AppInfo, SettingsKey
 
 def get_config_dir() -> Path:
     """Ermittelt das Konfigurationsverzeichnis im APPDATA-Ordner als Path-Objekt."""
@@ -44,35 +44,57 @@ def save_atomic(data, target_path: str | Path) -> bool:
 CONFIG_DIR = get_config_dir()
 LOG_FILE = CONFIG_DIR / 'monitor.log'
 
-def reconfigure_logging(settings: dict):
-    """
-    Rekonfiguriert den Root-Logger mit Werten aus den Einstellungen.
-    """
-    max_mb = settings.get("log_max_size_mb", 20)
-    backup_count = settings.get("log_backup_count", 5)
-    log_level_name = settings.get("log_level", "INFO").upper()
-    level = logging.DEBUG if log_level_name == "DEBUG" else logging.INFO
-
-    max_bytes = max_mb * 1024 * 1024
-    root_logger = logging.getLogger()
-    
-    for handler in root_logger.handlers[:]:
-        if isinstance(handler, logging.FileHandler):
-            root_logger.removeHandler(handler)
-            handler.close()
-
+def _create_rotating_log_handler(log_file: Path, max_bytes: int, backup_count: int) -> RotatingFileHandler:
+    """Erzeugt einen fertig konfigurierten RotatingFileHandler."""
     handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=max_bytes, backupCount=backup_count, encoding='utf-8'
+        log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding='utf-8',
     )
     formatter = logging.Formatter(
         '%(asctime)s | %(levelname)-8s | %(filename)s:%(lineno)d | %(message)s',
         '%Y-%m-%d %H:%M:%S'
     )
     handler.setFormatter(formatter)
-    root_logger.addHandler(handler)
+    return handler
+
+def reconfigure_logging(settings: dict):
+    """
+    Rekonfiguriert den Root-Logger mit Werten aus den Einstellungen.
+    """
+    max_mb = settings.get(SettingsKey.LOG_MAX_SIZE_MB.value, 20)
+    backup_count = settings.get(SettingsKey.LOG_BACKUP_COUNT.value, 5)
+    log_level_name = settings.get(SettingsKey.LOG_LEVEL.value, "INFO").upper()
+    level = logging.DEBUG if log_level_name == "DEBUG" else logging.INFO
+
+    max_bytes = max_mb * 1024 * 1024
+    root_logger = logging.getLogger()
     root_logger.setLevel(level)
+    old_file_handlers = [
+        handler for handler in root_logger.handlers
+        if isinstance(handler, logging.FileHandler)
+    ]
+
+    try:
+        new_handler = _create_rotating_log_handler(LOG_FILE, max_bytes, backup_count)
+    except Exception:
+        logging.exception(
+            "Logging-Rekonfiguration fehlgeschlagen. Bisherige Log-Handler bleiben aktiv."
+        )
+        return False
+
+    root_logger.addHandler(new_handler)
+
+    for handler in old_file_handlers:
+        root_logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            logging.debug("Alter Log-Handler konnte nicht sauber geschlossen werden.", exc_info=True)
 
     logging.info(f"Logging rekonfiguriert: Level={log_level_name}, max_size={max_mb}MB, backups={backup_count}")
+    return True
 
 def set_log_level(level_name: str):
     """Setzt das Log-Level zur Laufzeit."""

@@ -1,6 +1,5 @@
 # utils/settings_manager.py
 import json
-import os
 import logging
 import shutil
 from typing import Dict, Any, Optional, Union, List
@@ -9,6 +8,7 @@ from datetime import datetime
 from copy import deepcopy
 
 from PySide6.QtCore import QObject, Signal
+from config.config import save_atomic
 
 class SettingsManager(QObject):
     """
@@ -19,7 +19,7 @@ class SettingsManager(QObject):
     def __init__(self, settings_file_path: Union[str, Path], default_settings: Optional[Dict[str, Any]] = None):
         super().__init__()
         self.settings_file_path = Path(settings_file_path)
-        self.default_settings = default_settings or {}
+        self.default_settings = deepcopy(default_settings or {})
         self.current_settings = {}
 
         self.settings_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,8 +42,8 @@ class SettingsManager(QObject):
                     raise ValueError("Settings file does not contain a valid dictionary.")
 
                 # Merge loaded settings with defaults to add new keys
-                self.current_settings = self.default_settings.copy()
-                self.current_settings.update(loaded_settings)
+                self.current_settings = deepcopy(self.default_settings)
+                self.current_settings.update(deepcopy(loaded_settings))
                 logging.info(f"Loaded {len(loaded_settings)} settings.")
 
         except (json.JSONDecodeError, ValueError) as e:
@@ -53,7 +53,7 @@ class SettingsManager(QObject):
             logging.exception("An unexpected error occurred while loading settings.")
             self._create_default_settings()
         
-        return self.current_settings.copy()
+        return deepcopy(self.current_settings)
 
     def save_settings(self) -> bool:
         """Saves the current settings to the file atomically."""
@@ -83,9 +83,11 @@ class SettingsManager(QObject):
         """
         old_value = self.current_settings.get(key)
         if old_value != value:
-            self.current_settings[key] = value
+            stored_value = deepcopy(value) if isinstance(value, (dict, list)) else value
+            emitted_value = deepcopy(stored_value) if isinstance(stored_value, (dict, list)) else stored_value
+            self.current_settings[key] = stored_value
             logging.debug(f"Setting changed: {key} = {value} (was: {old_value})")
-            self.setting_changed.emit(key, value)
+            self.setting_changed.emit(key, emitted_value)
             if save_immediately:
                 self.save_settings()
 
@@ -96,23 +98,25 @@ class SettingsManager(QObject):
         for key, value in updates.items():
             old_value = self.current_settings.get(key)
             if old_value != value:
-                self.current_settings[key] = value
+                stored_value = deepcopy(value) if isinstance(value, (dict, list)) else value
+                emitted_value = deepcopy(stored_value) if isinstance(stored_value, (dict, list)) else stored_value
+                self.current_settings[key] = stored_value
                 logging.debug(f"Setting changed: {key} = {value} (was: {old_value})")
-                self.setting_changed.emit(key, value)
+                self.setting_changed.emit(key, emitted_value)
         
         if save_immediately:
             self.save_settings()
 
     def get_all_settings(self) -> Dict[str, Any]:
         """Returns a copy of all current settings."""
-        return self.current_settings.copy()
+        return deepcopy(self.current_settings)
 
     # ERWEITERT: Gruppierte Einstellungen für das Layout-System
     def get_settings_by_keys(self, keys: List[str]) -> Dict[str, Any]:
         """
         Gibt eine Gruppe von Einstellungen basierend auf einer Liste von Schlüsseln zurück.
         """
-        return {key: self.current_settings.get(key) for key in keys if key in self.current_settings}
+        return {key: self.get_setting(key) for key in keys if key in self.current_settings}
 
     def get_font_settings(self) -> Dict[str, Any]:
         """Gibt alle schriftbezogenen Einstellungen zurück."""
@@ -241,7 +245,7 @@ class SettingsManager(QObject):
         updates = {}
         for key in keys:
             if key in self.default_settings:
-                updates[key] = self.default_settings[key]
+                updates[key] = deepcopy(self.default_settings[key])
         
         if updates:
             self.update_settings(updates, save_immediately)
@@ -288,8 +292,9 @@ class SettingsManager(QObject):
         """Exports settings to a specified file."""
         try:
             export_path = Path(file_path)
-            with open(export_path, 'w', encoding='utf-8') as f:
-                json.dump(self.current_settings, f, indent=4, ensure_ascii=False)
+            if not save_atomic(self.current_settings, export_path):
+                logging.error(f"Failed to export settings to: {export_path}")
+                return False
             logging.info(f"Settings exported to: {export_path}")
             return True
         except Exception:
@@ -310,17 +315,21 @@ class SettingsManager(QObject):
             if not isinstance(imported_settings, dict):
                 raise ValueError("Import file does not contain a valid settings dictionary.")
 
-            # Backup current settings before import
-            backup_path = self.settings_file_path.with_name(
-                f"{self.settings_file_path.stem}_backup_{datetime.now():%Y%m%d%H%M%S}.json"
-            )
-            shutil.copy2(self.settings_file_path, backup_path)
-            logging.info(f"Current settings backed up to: {backup_path}")
+            sanitized_settings = self._sanitize_imported_settings(imported_settings)
+            new_settings = deepcopy(self.default_settings)
+            new_settings.update(sanitized_settings)
 
-            # Import new settings
-            self.current_settings = self.default_settings.copy()
-            self.current_settings.update(imported_settings)
-            self.save_settings()
+            backup_path = self._backup_current_settings("backup")
+            if self.settings_file_path.exists() and backup_path is None:
+                return False
+
+            old_settings = deepcopy(self.current_settings)
+            self.current_settings = new_settings
+            if not self.save_settings():
+                self.current_settings = old_settings
+                return False
+
+            self._emit_changed_signals(old_settings, self.current_settings)
             logging.info(f"Settings imported from: {import_path}")
             return True
         except Exception:
@@ -330,16 +339,16 @@ class SettingsManager(QObject):
     def reset_to_defaults(self) -> bool:
         """Resets all settings to their default values."""
         try:
-            # Backup current settings before reset
-            backup_path = self.settings_file_path.with_name(
-                f"{self.settings_file_path.stem}_reset_backup_{datetime.now():%Y%m%d%H%M%S}.json"
-            )
-            if self.settings_file_path.exists():
-                shutil.copy2(self.settings_file_path, backup_path)
-                logging.info(f"Settings backed up before reset to: {backup_path}")
+            backup_path = self._backup_current_settings("reset_backup")
+            if self.settings_file_path.exists() and backup_path is None:
+                return False
 
-            self.current_settings = self.default_settings.copy()
-            self.save_settings()
+            old_settings = deepcopy(self.current_settings)
+            self.current_settings = deepcopy(self.default_settings)
+            if not self.save_settings():
+                self.current_settings = old_settings
+                return False
+
             logging.info("Settings reset to defaults.")
             return True
         except Exception:
@@ -348,7 +357,7 @@ class SettingsManager(QObject):
 
     def _create_default_settings(self):
         """Creates a new settings file with default values."""
-        self.current_settings = self.default_settings.copy()
+        self.current_settings = deepcopy(self.default_settings)
         self.save_settings()
         logging.info("Default settings created and saved.")
 
@@ -366,3 +375,72 @@ class SettingsManager(QObject):
             logging.exception("Failed to create backup of corrupt settings file.")
         
         self._create_default_settings()
+
+    def _backup_current_settings(self, suffix: str) -> Optional[Path]:
+        """Creates a timestamped backup of the current settings file."""
+        if not self.settings_file_path.exists():
+            return None
+
+        backup_path = self.settings_file_path.with_name(
+            f"{self.settings_file_path.stem}_{suffix}_{datetime.now():%Y%m%d%H%M%S}.json"
+        )
+        try:
+            shutil.copy2(self.settings_file_path, backup_path)
+            logging.info(f"Current settings backed up to: {backup_path}")
+            return backup_path
+        except Exception:
+            logging.exception("Failed to back up current settings before import/reset.")
+            return None
+
+    def _emit_changed_signals(self, old_settings: Dict[str, Any], new_settings: Dict[str, Any]):
+        """Emits setting_changed for every key whose effective value changed."""
+        all_keys = set(old_settings) | set(new_settings)
+        for key in all_keys:
+            old_value = old_settings.get(key)
+            new_value = new_settings.get(key)
+            if old_value != new_value:
+                emitted_value = deepcopy(new_value) if isinstance(new_value, (dict, list)) else new_value
+                self.setting_changed.emit(key, emitted_value)
+
+    def _sanitize_imported_settings(self, imported_settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Filters unknown keys and rejects values that are incompatible with the known schema."""
+        sanitized: Dict[str, Any] = {}
+        known_keys = set(self.default_settings) | set(self.current_settings)
+
+        for key, value in imported_settings.items():
+            if not self._is_importable_setting_key(key, known_keys):
+                logging.warning("Ignoring unknown imported setting key: %s", key)
+                continue
+
+            if key in self.default_settings and not self._is_compatible_with_default(
+                self.default_settings[key],
+                value,
+            ):
+                logging.warning("Ignoring imported setting with incompatible type: %s", key)
+                continue
+
+            sanitized[key] = deepcopy(value)
+
+        return sanitized
+
+    def _is_importable_setting_key(self, key: str, known_keys: set[str]) -> bool:
+        """Returns True for keys that are part of the schema or valid dynamic settings."""
+        return key in known_keys or key.startswith("show_")
+
+    def _is_compatible_with_default(self, default_value: Any, imported_value: Any) -> bool:
+        """Checks whether an imported value fits the schema implied by the default value."""
+        if default_value is None:
+            return True
+        if isinstance(default_value, bool):
+            return isinstance(imported_value, bool)
+        if isinstance(default_value, int):
+            return isinstance(imported_value, int) and not isinstance(imported_value, bool)
+        if isinstance(default_value, float):
+            return isinstance(imported_value, (int, float)) and not isinstance(imported_value, bool)
+        if isinstance(default_value, str):
+            return isinstance(imported_value, str)
+        if isinstance(default_value, dict):
+            return isinstance(imported_value, dict)
+        if isinstance(default_value, list):
+            return isinstance(imported_value, list)
+        return isinstance(imported_value, type(default_value))

@@ -4,8 +4,8 @@ import uuid
 from enum import Enum
 
 class GroupType(Enum):
-    NORMAL = "normal"    # Horizontal gruppiert, gleiche Breite
-    STACK = "stack"      # Vertikal gestapelt, automatische Positionierung
+    NORMAL = "normal"    # Horizontal gruppiert, individuelle Breiten
+    STACK = "stack"      # Gestapelt, gemeinsame Breite nur bei vertikaler Anordnung
 
 class GroupInfo:
     """Informationen über eine Gruppe"""

@@ -24,7 +24,11 @@ class BackgroundWidget(QWidget):
 
     def set_background_alpha(self, alpha):
         """Setzt die Transparenz (Alpha-Wert) des Hintergrunds."""
-        self.background_color.setAlpha(alpha)
+        try:
+            alpha = int(alpha)
+        except (TypeError, ValueError):
+            alpha = 200
+        self.background_color.setAlpha(max(0, min(255, alpha)))
         self.update()
 
     # --- NEUE METHODEN FÜR GRUPPENRAHMEN ---

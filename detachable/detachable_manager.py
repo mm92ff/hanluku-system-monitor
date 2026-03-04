@@ -2,7 +2,7 @@
 from __future__ import annotations
 import logging
 import uuid
-from typing import TYPE_CHECKING, Dict, Set, Optional, List
+from typing import TYPE_CHECKING, Callable, Dict, Set, Optional, List
 
 from PySide6.QtCore import QObject, Slot, QRect, QPoint, Qt, QTimer, QSize, Signal
 from PySide6.QtGui import QFont, QFontMetrics
@@ -27,6 +27,7 @@ class DetachableManager(QObject):
     """
     layout_modified = Signal()
     MIN_FONT_SIZE = 6
+    RESERVED_LAYOUT_NAMES = {"_last_session"}
 
     def __init__(self, main_window: SystemMonitor, monitor_manager: Optional[MonitorManager] = None):
         super().__init__()
@@ -40,6 +41,7 @@ class DetachableManager(QObject):
         self.docker = MagneticDocker(gap=gap)
         self.group_manager = GroupManager()
         self.drag_start_positions: Dict[str, QPoint] = {}
+        self.hidden_widget_states: Dict[str, Dict[str, object]] = {}
         self.layouts = load_layout(CONFIG_DIR)
         self.active_layout_name: Optional[str] = None
         
@@ -54,6 +56,21 @@ class DetachableManager(QObject):
             logging.info("MonitorManager übergeben - Multimonitor-Unterstützung aktiv.")
         else:
             logging.warning("Kein MonitorManager - Multimonitor-Unterstützung eingeschränkt.")
+
+    def _get_setting_value(
+        self,
+        key: str,
+        default,
+        override_settings: Optional[Dict[str, object]] = None,
+    ):
+        if override_settings is not None and key in override_settings:
+            return override_settings[key]
+        return self.main_win.settings_manager.get_setting(key, default)
+
+    def _get_hidden_widget_state_store(self) -> Dict[str, Dict[str, object]]:
+        if not hasattr(self, "hidden_widget_states"):
+            self.hidden_widget_states = {}
+        return self.hidden_widget_states
 
     @Slot(str, dict)
     def update_widget_display(self, metric_key: str, data: dict):
@@ -165,11 +182,12 @@ class DetachableManager(QObject):
         """Aktualisiert die Window-Flags aller aktiven Widgets."""
         on_top = self.main_win.settings_manager.get_setting(SettingsKey.ALWAYS_ON_TOP.value, True)
         for widget in self.active_widgets.values():
+            was_visible = widget.isVisible()
             flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
             if on_top:
                 flags |= Qt.WindowType.WindowStaysOnTopHint
             widget.setWindowFlags(flags)
-            widget.show()
+            widget.setVisible(was_visible)
         logging.debug(f"Window-Flags aktualisiert (Always on Top: {on_top})")
 
     def get_available_layout_names(self) -> List[str]:
@@ -179,14 +197,22 @@ class DetachableManager(QObject):
     @Slot()
     def _save_layout_to_session(self):
         """Slot, der vom save_timer aufgerufen wird, um die Session zu speichern."""
-        self.save_layout_as("_last_session")
+        self.save_layout_as("_last_session", allow_reserved=True)
 
-    def save_layout_as(self, name: str):
+    def _normalize_layout_name(self, name: Optional[str]) -> str:
+        return str(name or "").strip()
+
+    def save_layout_as(self, name: str, allow_reserved: bool = False) -> bool:
         """
         Speichert das aktuelle Layout unter einem bestimmten Namen.
         """
+        name = self._normalize_layout_name(name)
         if not name:
-            return
+            logging.warning("Leerer Layout-Name wurde verworfen.")
+            return False
+        if not allow_reserved and name in self.RESERVED_LAYOUT_NAMES:
+            logging.warning("Reservierter Layout-Name '%s' wurde verworfen.", name)
+            return False
         
         widget_data = {}
         for key, widget in self.active_widgets.items():
@@ -206,16 +232,86 @@ class DetachableManager(QObject):
             LayoutSection.WIDGETS.value: widget_data,
             **self.main_win.settings_manager.get_complete_layout_settings()
         }
-        
+
+        previous_layout = self.layouts.get(name)
         self.layouts[name] = layout_data
-        save_layout(self.layouts, CONFIG_DIR)
+        if not save_layout(self.layouts, CONFIG_DIR):
+            if previous_layout is None:
+                self.layouts.pop(name, None)
+            else:
+                self.layouts[name] = previous_layout
+            logging.error("Layout '%s' konnte nicht dauerhaft gespeichert werden.", name)
+            return False
+
         self.active_layout_name = name
         logging.info(f"Layout '{name}' mit {len(widget_data)} Widgets gespeichert.")
+        return True
+
+    def delete_layout(self, name: str) -> bool:
+        """Löscht ein benanntes Layout dauerhaft."""
+        name = self._normalize_layout_name(name)
+        if not name or name not in self.layouts:
+            logging.warning("Layout '%s' konnte nicht gelöscht werden, weil es nicht existiert.", name)
+            return False
+        if name in self.RESERVED_LAYOUT_NAMES:
+            logging.warning("Reserviertes Layout '%s' kann nicht gelöscht werden.", name)
+            return False
+
+        removed_layout = self.layouts.pop(name)
+        previous_active_layout = self.active_layout_name
+        if self.active_layout_name == name:
+            self.active_layout_name = None
+
+        if not save_layout(self.layouts, CONFIG_DIR):
+            self.layouts[name] = removed_layout
+            self.active_layout_name = previous_active_layout
+            logging.error("Layout '%s' konnte nicht gelöscht werden, weil das Persistieren fehlschlug.", name)
+            return False
+
+        logging.info("Layout '%s' gelöscht.", name)
+        return True
+
+    def _sanitize_widget_layout_data(self, widget_data) -> Dict[str, Dict]:
+        """Bereinigt geladene Widget-Layout-Daten auf ein robustes Kernformat."""
+        if not isinstance(widget_data, dict):
+            return {}
+
+        sanitized: Dict[str, Dict] = {}
+        for key, state in widget_data.items():
+            if not isinstance(key, str) or not isinstance(state, dict):
+                continue
+
+            pos = state.get("pos")
+            width = state.get("width")
+            group_id = state.get("group_id")
+            group_type = state.get("group_type")
+            monitor = state.get("monitor")
+
+            entry: Dict[str, object] = {}
+            if (
+                isinstance(pos, (list, tuple))
+                and len(pos) == 2
+                and all(isinstance(coord, (int, float)) for coord in pos)
+            ):
+                entry["pos"] = [int(pos[0]), int(pos[1])]
+            if isinstance(width, (int, float)) and int(width) > 0:
+                entry["width"] = int(width)
+            if isinstance(group_id, str):
+                entry["group_id"] = group_id
+            if isinstance(group_type, str):
+                entry["group_type"] = group_type
+            if isinstance(monitor, str):
+                entry["monitor"] = monitor
+
+            sanitized[key] = entry
+
+        return sanitized
 
     def load_layout(self, name: Optional[str]):
         """
         Lädt ein benanntes Layout mit korrekter Initialisierungs-Reihenfolge.
         """
+        self._get_hidden_widget_state_store().clear()
         self._deactivate_view()
 
         # GEÄNDERT: CPU- und GPU-Auswahl VOR dem Laden der Widgets treffen
@@ -233,12 +329,18 @@ class DetachableManager(QObject):
             return
 
         layout_data = self.layouts[name]
+        if not isinstance(layout_data, dict):
+            logging.error("Layout '%s' ist beschädigt oder hat ein ungültiges Format. Verwende Standard-Layout.", name)
+            self.active_layout_name = None
+            self.main_win.ui_manager.refresh_metric_definitions()
+            self._activate_view_with_data({})
+            return
         
         if LayoutSection.WIDGETS.value in layout_data:
             self._load_complete_settings_from_layout(layout_data)
-            widget_data = layout_data[LayoutSection.WIDGETS.value]
+            widget_data = self._sanitize_widget_layout_data(layout_data.get(LayoutSection.WIDGETS.value))
         else:
-            widget_data = layout_data
+            widget_data = self._sanitize_widget_layout_data(layout_data)
             logging.info(f"Layout '{name}' im alten Format - nur Positionen werden geladen.")
         
         self.main_win.ui_manager.refresh_metric_definitions()
@@ -268,7 +370,6 @@ class DetachableManager(QObject):
             self.main_win.tray_icon_manager.rebuild_menu()
             self.main_win.ui_manager.apply_styles()
             self.main_win.tray_icon_manager.update_tray_icon()
-            self.main_win.restart_worker_thread()
             self.update_all_window_flags()
         except Exception as e:
             logging.error(f"Fehler bei Post-Layout-Load-Updates: {e}", exc_info=True)
@@ -375,14 +476,19 @@ class DetachableManager(QObject):
     def _deactivate_view(self):
         """Deaktiviert alle aktiven Widgets."""
         for key in list(self.active_widgets.keys()):
-            self.attach_metric(key)
+            self.attach_metric(key, remember_state=False)
 
     def detach_metric(self, metric_key: str, initial_pos: Optional[QPoint] = None):
         """Löst eine Metrik als eigenes Widget los."""
         if metric_key in self.active_widgets or not (widget_info := self.ui_manager.metric_widgets.get(metric_key)):
             logging.warning(f"detach_metric für '{metric_key}' fehlgeschlagen: Widget nicht im UIManager bekannt.")
             return
-        
+
+        hidden_widget_states = self._get_hidden_widget_state_store()
+        restore_state = hidden_widget_states.pop(metric_key, None) if initial_pos is None else None
+        if restore_state and (saved_pos := restore_state.get("pos")):
+            initial_pos = QPoint(saved_pos[0], saved_pos[1])
+
         pos = self.validate_widget_position(initial_pos, QSize(200, 50)) if initial_pos else self.get_safe_position_for_new_widget()
         
         widget = DetachableWidget(metric_key, {'label_text': widget_info['full_text'], 'has_bar': widget_info["has_bar"]}, self)
@@ -397,8 +503,12 @@ class DetachableManager(QObject):
         
         widget.move(pos)
         self.apply_styles_to_widget(widget)
+        if restore_state and isinstance(restore_state.get("width"), int):
+            widget.setFixedWidth(max(1, restore_state["width"]))
         widget.show()
         self.active_widgets[metric_key] = widget
+        if restore_state:
+            self._restore_hidden_widget_group_membership(metric_key, restore_state)
 
     @Slot(str)
     def _handle_widget_hide_request(self, metric_key: str):
@@ -406,47 +516,195 @@ class DetachableManager(QObject):
         self.main_win.action_handler.toggle_metric_visibility(metric_key, False)
         logging.debug(f"Widget '{metric_key}' über Kontextmenü ausgeblendet")
 
-    def attach_metric(self, metric_key: str):
+    def _capture_hidden_widget_state(self, metric_key: str, widget: DetachableWidget) -> Dict[str, object]:
+        state: Dict[str, object] = {
+            "pos": [widget.x(), widget.y()],
+            "width": widget.width(),
+        }
+
+        group_type = self.group_manager.get_group_type(metric_key)
+        group_id = self.group_manager.get_group_id(metric_key)
+        if group_type and group_id:
+            state["group_type"] = group_type.value
+            group_members = [
+                key for key in self.group_manager.get_group_members(group_id)
+                if key != metric_key and key in self.active_widgets
+            ]
+            if group_members:
+                if group_type == GroupType.STACK:
+                    is_vertical = self._is_vertical_arrangement(
+                        [self.active_widgets[key] for key in group_members]
+                    )
+                    group_members.sort(
+                        key=lambda key: (
+                            self.active_widgets[key].y()
+                            if is_vertical else self.active_widgets[key].x()
+                        )
+                    )
+                else:
+                    group_members.sort(key=lambda key: self.active_widgets[key].x())
+                state["group_members"] = group_members
+        return state
+
+    def _restore_hidden_widget_group_membership(self, metric_key: str, state: Dict[str, object]):
+        group_type_value = state.get("group_type")
+        if not isinstance(group_type_value, str):
+            return
+
+        try:
+            group_type = GroupType(group_type_value)
+        except ValueError:
+            return
+
+        group_members = state.get("group_members")
+        if not isinstance(group_members, list):
+            return
+
+        for target_key in group_members:
+            if target_key in self.active_widgets and target_key != metric_key:
+                self.group_manager.add_to_group(metric_key, target_key, group_type)
+                self._synchronize_group_layout()
+                return
+
+    def attach_metric(self, metric_key: str, remember_state: bool = True):
         """Löst ein Widget wieder an und schließt es."""
+        hidden_widget_states = self._get_hidden_widget_state_store()
+        if widget := self.active_widgets.get(metric_key):
+            if remember_state:
+                hidden_widget_states[metric_key] = self._capture_hidden_widget_state(metric_key, widget)
+            else:
+                hidden_widget_states.pop(metric_key, None)
+
         self.handle_ungroup_request(metric_key)
         if widget := self.active_widgets.pop(metric_key, None):
             widget.close()
             widget.deleteLater()
 
-    def apply_styles_to_widget(self, widget: DetachableWidget):
-        """Wendet alle aktuellen Stil-Einstellungen auf ein Widget an."""
-        settings = self.main_win.settings_manager
-        font = QFont(settings.get_setting(SettingsKey.FONT_FAMILY.value), max(self.MIN_FONT_SIZE, settings.get_setting(SettingsKey.FONT_SIZE.value)))
-        font.setBold(settings.get_setting(SettingsKey.FONT_WEIGHT.value) == "bold")
-        
+    def apply_styles_to_widget(
+        self,
+        widget: DetachableWidget,
+        override_settings: Optional[Dict[str, object]] = None,
+    ):
+        """Wendet die aktuellen oder überschriebenen Stil-Einstellungen auf ein Widget an."""
+        font = QFont(
+            self._get_setting_value(
+                SettingsKey.FONT_FAMILY.value,
+                "",
+                override_settings,
+            ),
+            max(
+                self.MIN_FONT_SIZE,
+                int(
+                    self._get_setting_value(
+                        SettingsKey.FONT_SIZE.value,
+                        10,
+                        override_settings,
+                    )
+                ),
+            ),
+        )
+        font.setBold(
+            self._get_setting_value(
+                SettingsKey.FONT_WEIGHT.value,
+                "normal",
+                override_settings,
+            ) == "bold"
+        )
+
         font_metrics = QFontMetrics(font)
         font_height = font_metrics.height()
 
-        bar_mult = settings.get_setting(SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value, 9)
+        bar_mult = int(
+            self._get_setting_value(
+                SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value,
+                9,
+                override_settings,
+            )
+        )
         bar_width = max(30, font.pointSize() * bar_mult)
-        show_bars = settings.get_setting(SettingsKey.SHOW_BAR_GRAPHS.value, True) and widget.bar is not None
-        
-        bar_height_factor = settings.get_setting(SettingsKey.BAR_GRAPH_HEIGHT_FACTOR.value, 0.65)
+        show_bars = bool(
+            self._get_setting_value(
+                SettingsKey.SHOW_BAR_GRAPHS.value,
+                True,
+                override_settings,
+            )
+        ) and widget.bar is not None
 
-        padding_mode = settings.get_setting(SettingsKey.WIDGET_PADDING_MODE.value, "factor")
+        bar_height_factor = float(
+            self._get_setting_value(
+                SettingsKey.BAR_GRAPH_HEIGHT_FACTOR.value,
+                0.65,
+                override_settings,
+            )
+        )
+
+        padding_mode = self._get_setting_value(
+            SettingsKey.WIDGET_PADDING_MODE.value,
+            "factor",
+            override_settings,
+        )
         if padding_mode == "factor":
-            factor = settings.get_setting(SettingsKey.WIDGET_PADDING_FACTOR.value, 0.25)
+            factor = float(
+                self._get_setting_value(
+                    SettingsKey.WIDGET_PADDING_FACTOR.value,
+                    0.25,
+                    override_settings,
+                )
+            )
             p_vert = int(font.pointSize() * factor)
             p_horiz = int(p_vert * 2.5)
             top_pad, bottom_pad = p_vert, p_vert
             widget.update_padding(p_horiz, p_vert, p_horiz, p_vert)
-        else: # "pixels"
-            top_pad = settings.get_setting(SettingsKey.WIDGET_PADDING_TOP.value, 2)
-            bottom_pad = settings.get_setting(SettingsKey.WIDGET_PADDING_BOTTOM.value, 2)
-            left_pad = settings.get_setting(SettingsKey.WIDGET_PADDING_LEFT.value, 5)
-            right_pad = settings.get_setting(SettingsKey.WIDGET_PADDING_RIGHT.value, 5)
+        else:
+            top_pad = int(
+                self._get_setting_value(
+                    SettingsKey.WIDGET_PADDING_TOP.value,
+                    2,
+                    override_settings,
+                )
+            )
+            bottom_pad = int(
+                self._get_setting_value(
+                    SettingsKey.WIDGET_PADDING_BOTTOM.value,
+                    2,
+                    override_settings,
+                )
+            )
+            left_pad = int(
+                self._get_setting_value(
+                    SettingsKey.WIDGET_PADDING_LEFT.value,
+                    5,
+                    override_settings,
+                )
+            )
+            right_pad = int(
+                self._get_setting_value(
+                    SettingsKey.WIDGET_PADDING_RIGHT.value,
+                    5,
+                    override_settings,
+                )
+            )
             widget.update_padding(left_pad, top_pad, right_pad, bottom_pad)
 
         widget.update_style(font, bar_width, show_bars, bar_height_factor, widget.metric_key)
-        
-        widget.background.set_background_color(settings.get_setting(SettingsKey.BACKGROUND_COLOR.value))
-        widget.background.set_background_alpha(settings.get_setting(SettingsKey.BACKGROUND_ALPHA.value, 200))
-        
+
+        widget.background.set_background_color(
+            self._get_setting_value(
+                SettingsKey.BACKGROUND_COLOR.value,
+                "#000000",
+                override_settings,
+            )
+        )
+        widget.background.set_background_alpha(
+            int(
+                self._get_setting_value(
+                    SettingsKey.BACKGROUND_ALPHA.value,
+                    200,
+                    override_settings,
+                )
+            )
+        )
+
         total_height = font_height + top_pad + bottom_pad
         widget.setFixedHeight(total_height)
 
@@ -464,13 +722,142 @@ class DetachableManager(QObject):
                 widget.adjustSize()
                 widget.value.setText(original_text)
 
+    def _with_layout_updates_blocked(self, action: Callable[[], None]):
+        was_blocked = self.blockSignals(True)
+        try:
+            action()
+        finally:
+            self.blockSignals(was_blocked)
+
+    def _apply_width_limits(
+        self,
+        widget: DetachableWidget,
+        override_settings: Optional[Dict[str, object]] = None,
+    ):
+        min_width = int(
+            self._get_setting_value(
+                SettingsKey.WIDGET_MIN_WIDTH.value,
+                50,
+                override_settings,
+            )
+        )
+        max_width = int(
+            self._get_setting_value(
+                SettingsKey.WIDGET_MAX_WIDTH.value,
+                2000,
+                override_settings,
+            )
+        )
+        if min_width > max_width:
+            min_width, max_width = max_width, min_width
+
+        current_width = widget.width()
+        clamped_width = max(min_width, min(max_width, current_width))
+        if clamped_width != current_width:
+            widget.setFixedWidth(clamped_width)
+
+    def _apply_styles_to_widgets(
+        self,
+        override_settings: Optional[Dict[str, object]] = None,
+        commit_layout: bool = True,
+        enforce_width_limits: bool = True,
+    ):
+        for widget in self.active_widgets.values():
+            self.apply_styles_to_widget(widget, override_settings=override_settings)
+            if enforce_width_limits:
+                self._apply_width_limits(widget, override_settings=override_settings)
+
+        if commit_layout:
+            QTimer.singleShot(0, self._synchronize_group_layout)
+            self.layout_modified.emit()
+            return
+
+        self._with_layout_updates_blocked(self._synchronize_group_layout)
+
     def apply_styles_to_all_active_widgets(self):
         """Wendet Stile auf alle aktiven Widgets an."""
+        self._apply_styles_to_widgets()
+
+    def preview_widget_appearance(self, preview_settings: Dict[str, object]):
+        """Wendet Widget-Darstellung temporär ohne Persistenz oder Autosave an."""
+        self._apply_styles_to_widgets(
+            override_settings=preview_settings,
+            commit_layout=False,
+            enforce_width_limits=False,
+        )
+
+    def get_active_widget_widths(self) -> Dict[str, int]:
+        return {key: widget.width() for key, widget in self.active_widgets.items()}
+
+    def preview_widget_widths(self, widths: Dict[str, int]):
+        def restore_widths():
+            for key, width in widths.items():
+                if widget := self.active_widgets.get(key):
+                    widget.setFixedWidth(int(width))
+            self._synchronize_group_layout()
+
+        self._with_layout_updates_blocked(restore_widths)
+
+    def set_uniform_widget_width(self, width: int):
+        width = self._clamp_widget_width(width)
         for widget in self.active_widgets.values():
-            self.apply_styles_to_widget(widget)
-        
+            widget.setFixedWidth(width)
+
         QTimer.singleShot(0, self._synchronize_group_layout)
         self.layout_modified.emit()
+
+    def _clamp_widget_width(self, width: int) -> int:
+        min_width = self.main_win.settings_manager.get_setting(
+            SettingsKey.WIDGET_MIN_WIDTH.value, 50
+        )
+        max_width = self.main_win.settings_manager.get_setting(
+            SettingsKey.WIDGET_MAX_WIDTH.value, 2000
+        )
+        if int(min_width) > int(max_width):
+            min_width, max_width = max_width, min_width
+        return max(int(min_width), min(int(max_width), int(width)))
+
+    def hide_widget_width_adjusters(self, except_key: Optional[str] = None):
+        for key, widget in self.active_widgets.items():
+            if key != except_key:
+                widget.hide_width_adjust_handle()
+
+    def show_widget_width_adjuster(self, metric_key: str):
+        target_widget = self.active_widgets.get(metric_key)
+        if not target_widget:
+            return
+
+        is_visible = target_widget.width_adjust_handle.isVisible()
+        self.hide_widget_width_adjusters(except_key=metric_key)
+        if is_visible:
+            target_widget.hide_width_adjust_handle()
+        else:
+            target_widget.show_width_adjust_handle()
+
+    def preview_widget_width(self, metric_key: str, width: int):
+        """Wendet eine Vorschau-Breite ohne Autosave an."""
+        target_widget = self.active_widgets.get(metric_key)
+        if not target_widget:
+            return
+
+        width = self._clamp_widget_width(width)
+        group_type = self.group_manager.get_group_type(metric_key)
+
+        if group_type == GroupType.STACK and self._stack_group_uses_shared_width(metric_key):
+            group_id = self.group_manager.get_group_id(metric_key)
+            if group_id:
+                group_members = self.group_manager.get_group_members(group_id)
+                for member_key in group_members:
+                    if widget := self.active_widgets.get(member_key):
+                        widget.setFixedWidth(width)
+        else:
+            target_widget.setFixedWidth(width)
+
+        was_blocked = self.blockSignals(True)
+        try:
+            self._synchronize_group_layout()
+        finally:
+            self.blockSignals(was_blocked)
 
     def set_widget_width(self, metric_key: str, width: int):
         """Setzt die feste Breite für ein Widget und synchronisiert die Gruppe."""
@@ -478,9 +865,11 @@ class DetachableManager(QObject):
         if not target_widget:
             return
 
+        width = self._clamp_widget_width(width)
+
         group_type = self.group_manager.get_group_type(metric_key)
         
-        if group_type == GroupType.STACK:
+        if group_type == GroupType.STACK and self._stack_group_uses_shared_width(metric_key):
             group_id = self.group_manager.get_group_id(metric_key)
             if group_id:
                 group_members = self.group_manager.get_group_members(group_id)
@@ -535,7 +924,7 @@ class DetachableManager(QObject):
         """Entfernt Widgets, deren Metriken nicht mehr verfügbar sind."""
         missing = [k for k in self.active_widgets if k not in self.ui_manager.metric_widgets]
         for key in missing:
-            self.attach_metric(key)
+            self.attach_metric(key, remember_state=False)
         self.update_all_widget_labels()
 
     @Slot(str)
@@ -566,17 +955,18 @@ class DetachableManager(QObject):
         self.layout_modified.emit()
 
     def _synchronize_stack_group(self, members: Set[str]):
-        """Positioniert die Widgets in einem vertikalen Stapel neu und synchronisiert Breiten."""
+        """Positioniert Widgets in einem Stack und koppelt Breiten nur bei vertikaler Anordnung."""
         widgets = [self.active_widgets[m] for m in members if m in self.active_widgets]
         if not widgets: return
         
         QApplication.processEvents()
 
-        max_width = max(w.width() for w in widgets)
-        for widget in widgets:
-            widget.setFixedWidth(max_width)
-
         is_vertical = self._is_vertical_arrangement(widgets)
+        if is_vertical:
+            max_width = max(w.width() for w in widgets)
+            for widget in widgets:
+                widget.setFixedWidth(max_width)
+
         widgets.sort(key=lambda w: w.y() if is_vertical else w.x())
         anchor = widgets[0]
 
@@ -610,6 +1000,18 @@ class DetachableManager(QObject):
         x_coords = [w.x() for w in widgets]
         y_coords = [w.y() for w in widgets]
         return (max(y_coords) - min(y_coords)) > (max(x_coords) - min(x_coords))
+
+    def _stack_group_uses_shared_width(self, metric_key: str) -> bool:
+        group_id = self.group_manager.get_group_id(metric_key)
+        if not group_id:
+            return False
+
+        widgets = [
+            self.active_widgets[member_key]
+            for member_key in self.group_manager.get_group_members(group_id)
+            if member_key in self.active_widgets
+        ]
+        return self._is_vertical_arrangement(widgets)
 
     def _update_group_visual_indicators(self):
         for widget in self.active_widgets.values():

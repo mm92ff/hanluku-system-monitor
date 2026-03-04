@@ -7,7 +7,13 @@ from PySide6.QtWidgets import (
     QGroupBox, QFormLayout
 )
 from PySide6.QtGui import QIcon
-from .base_window import SafeWindow
+from .base_window import (
+    SafeWindow,
+    configure_dialog_layout,
+    configure_dialog_window,
+    style_dialog_button,
+    style_info_label,
+)
 from config.constants import SettingsKey
 
 
@@ -27,7 +33,7 @@ class LabelEditorWindow(SafeWindow):
         except AttributeError:
             self.setWindowIcon(QIcon())
 
-        self.setGeometry(300, 300, 550, 600)
+        configure_dialog_window(self, 550, 600)
         self.input_widgets = {}
         
         self.init_ui()
@@ -36,10 +42,14 @@ class LabelEditorWindow(SafeWindow):
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
+        configure_dialog_layout(main_layout)
         
         labels_group = QGroupBox(self.translator.translate("win_label_metric_display_texts"))
         labels_layout = QVBoxLayout(labels_group)
-        labels_layout.addWidget(QLabel(self.translator.translate("win_label_editor_info")))
+        configure_dialog_layout(labels_layout, margins=(12, 12, 12, 12))
+        info_label = QLabel(self.translator.translate("win_label_editor_info"))
+        style_info_label(info_label, "muted")
+        labels_layout.addWidget(info_label)
 
         truncate_layout = QHBoxLayout()
         self.truncate_checkbox = QCheckBox(self.translator.translate("win_label_truncate_text"))
@@ -71,6 +81,9 @@ class LabelEditorWindow(SafeWindow):
         save_button.clicked.connect(self.save_and_close)
         cancel_button = QPushButton(self.translator.translate("win_shared_button_cancel"))
         cancel_button.clicked.connect(self.close_safely)
+        style_dialog_button(reset_all_button, "compact")
+        style_dialog_button(save_button, "primary")
+        style_dialog_button(cancel_button, "secondary")
         button_layout.addWidget(reset_all_button); button_layout.addStretch()
         button_layout.addWidget(save_button); button_layout.addWidget(cancel_button)
         main_layout.addLayout(button_layout)
@@ -92,6 +105,7 @@ class LabelEditorWindow(SafeWindow):
             default_text = info.get('default_text', 'N/A')
             edit_input = QLineEdit(custom_labels.get(key, "")); edit_input.setPlaceholderText(default_text)
             reset_button = QPushButton(self.translator.translate("win_shared_button_reset")); reset_button.clicked.connect(partial(self.reset_single, key))
+            style_dialog_button(reset_button, "compact")
             self.grid_layout.addWidget(QLabel(default_text), row, 0)
             self.grid_layout.addWidget(edit_input, row, 1)
             self.grid_layout.addWidget(reset_button, row, 2)
@@ -116,3 +130,17 @@ class LabelEditorWindow(SafeWindow):
         self.main_app.ui_manager.apply_styles()
         self.main_app.tray_icon_manager.rebuild_menu()
         self.close_safely()
+
+    def export_language_refresh_state(self) -> dict:
+        return {
+            "truncate": self.truncate_checkbox.isChecked(),
+            "length": self.length_spinbox.value(),
+            "texts": {key: widget.text() for key, widget in self.input_widgets.items()},
+        }
+
+    def apply_language_refresh_state(self, state: dict):
+        self.truncate_checkbox.setChecked(state.get("truncate", self.truncate_checkbox.isChecked()))
+        self.length_spinbox.setValue(state.get("length", self.length_spinbox.value()))
+        for key, text in state.get("texts", {}).items():
+            if key in self.input_widgets:
+                self.input_widgets[key].setText(text)

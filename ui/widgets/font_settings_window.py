@@ -12,7 +12,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont, QIcon, QFontDatabase
 from PySide6.QtCore import Qt, QTimer
 
-from .base_window import SafeWindow
+from .base_window import (
+    SafeWindow,
+    configure_dialog_layout,
+    configure_dialog_window,
+    style_dialog_button,
+    style_info_label,
+    style_preview_label,
+)
 from config.constants import SettingsKey
 
 if TYPE_CHECKING:
@@ -40,8 +47,7 @@ class FontSettingsWindow(SafeWindow):
         self.current_weight = self.settings_manager.get_setting(SettingsKey.FONT_WEIGHT.value, "normal")
         
         self.setWindowTitle(self.translator.translate("win_title_font"))
-        self.setMinimumSize(500, 600)
-        self.resize(500, 600)
+        configure_dialog_window(self, 500, 600)
         
         try:
             self.setWindowIcon(self.main_app.tray_icon_manager.tray_icon.icon())
@@ -109,8 +115,7 @@ class FontSettingsWindow(SafeWindow):
     def _setup_ui(self):
         """Erstellt die Benutzeroberfläche."""
         layout = QVBoxLayout(self)
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 20, 20, 20)
+        configure_dialog_layout(layout, margins=(20, 20, 20, 20), spacing=15)
         
         settings_group = QGroupBox(self.translator.translate("win_font_selection_group"))
         settings_layout = QVBoxLayout(settings_group)
@@ -128,7 +133,7 @@ class FontSettingsWindow(SafeWindow):
         # Info-Label für lokale Fonts
         if self.loaded_fonts:
             info_label = QLabel(self.translator.translate("win_font_local_fonts_loaded", count=len(self.loaded_fonts)))
-            info_label.setStyleSheet("color: #4CAF50; font-size: 10px;")
+            style_info_label(info_label, "success")
             settings_layout.addWidget(info_label)
         
         size_layout = QHBoxLayout()
@@ -153,7 +158,7 @@ class FontSettingsWindow(SafeWindow):
         preview_group = QGroupBox(self.translator.translate("win_font_preview_group"))
         preview_layout = QVBoxLayout(preview_group)
         self.preview_label = QLabel() # Text wird in _update_preview gesetzt
-        self.preview_label.setStyleSheet("background-color: #2b2b2b; color: #ffffff; padding: 20px; border-radius: 5px;")
+        style_preview_label(self.preview_label)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview_layout.addWidget(self.preview_label)
         layout.addWidget(preview_group)
@@ -163,6 +168,9 @@ class FontSettingsWindow(SafeWindow):
         self.reset_button = QPushButton(self.translator.translate("win_shared_button_reset"))
         self.cancel_button = QPushButton(self.translator.translate("win_shared_button_cancel"))
         self.apply_button = QPushButton(self.translator.translate("win_shared_button_apply"))
+        style_dialog_button(self.reset_button, "compact")
+        style_dialog_button(self.cancel_button, "secondary")
+        style_dialog_button(self.apply_button, "primary")
         button_layout.addStretch()
         button_layout.addWidget(self.reset_button)
         button_layout.addWidget(self.cancel_button)
@@ -239,3 +247,19 @@ class FontSettingsWindow(SafeWindow):
         # UI-Update leicht verzögert ausführen, damit die Einstellungen sicher geschrieben sind
         QTimer.singleShot(50, self.main_app.ui_manager.apply_styles)
         self.close_safely()
+
+    def export_language_refresh_state(self) -> dict:
+        return {
+            "family": self.family_combo.currentText(),
+            "size": self.size_spinbox.value(),
+            "bold": self.bold_checkbox.isChecked(),
+        }
+
+    def apply_language_refresh_state(self, state: dict):
+        family = state.get("family")
+        if family:
+            if self.family_combo.findText(family) == -1:
+                self.family_combo.addItem(family)
+            self.family_combo.setCurrentText(family)
+        self.size_spinbox.setValue(state.get("size", self.size_spinbox.value()))
+        self.bold_checkbox.setChecked(state.get("bold", self.bold_checkbox.isChecked()))

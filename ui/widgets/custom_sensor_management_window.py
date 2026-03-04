@@ -5,7 +5,7 @@ import uuid
 from typing import TYPE_CHECKING, Dict, Any
 
 from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
     QGroupBox, QSplitter, QTextEdit, QCheckBox
 )
@@ -15,7 +15,13 @@ from PySide6.QtGui import QColor
 from config.constants import SettingsKey
 from ui.widgets.custom_sensor_dialog import CustomSensorDialog
 # Geändert: Importiere SafeWindow
-from .base_window import SafeWindow
+from .base_window import (
+    SafeWindow,
+    configure_dialog_layout,
+    configure_dialog_window,
+    style_dialog_button,
+    style_info_label,
+)
 
 if TYPE_CHECKING:
     from core.main_window import SystemMonitor
@@ -32,8 +38,7 @@ class CustomSensorManagementWindow(SafeWindow):
         self.translator = parent.translator
         
         self.setWindowTitle(self.translator.translate("win_title_custom_sensor_management"))
-        self.setMinimumSize(800, 600)
-        self.resize(1000, 700)
+        configure_dialog_window(self, 1000, 700, min_width=800, min_height=600)
         
         self._setup_ui()
         self._load_custom_sensors()
@@ -41,6 +46,7 @@ class CustomSensorManagementWindow(SafeWindow):
     def _setup_ui(self):
         """Erstellt die Benutzeroberfläche."""
         layout = QVBoxLayout(self)
+        configure_dialog_layout(layout)
         
         # Splitter für Tabelle und Details
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -63,6 +69,7 @@ class CustomSensorManagementWindow(SafeWindow):
         self.close_button = QPushButton(self.translator.translate("win_shared_button_close"))
         # Geändert: Ruft close_safely auf, um das Fenster korrekt zu zerstören
         self.close_button.clicked.connect(self.close_safely)
+        style_dialog_button(self.close_button, "secondary")
         
         button_layout.addStretch()
         button_layout.addWidget(self.close_button)
@@ -73,23 +80,28 @@ class CustomSensorManagementWindow(SafeWindow):
         """Erstellt den Tabellen-Bereich."""
         group = QGroupBox(self.translator.translate("win_custom_sensor_list"))
         layout = QVBoxLayout(group)
+        configure_dialog_layout(layout, margins=(12, 12, 12, 12))
         
         # Buttons über der Tabelle
         button_layout = QHBoxLayout()
         
         self.add_button = QPushButton(self.translator.translate("win_custom_sensor_add"))
         self.add_button.clicked.connect(self._add_custom_sensor)
+        style_dialog_button(self.add_button, "accent")
         
         self.edit_button = QPushButton(self.translator.translate("win_custom_sensor_edit"))
         self.edit_button.clicked.connect(self._edit_custom_sensor)
         self.edit_button.setEnabled(False)
+        style_dialog_button(self.edit_button, "compact")
         
         self.delete_button = QPushButton(self.translator.translate("win_custom_sensor_delete"))
         self.delete_button.clicked.connect(self._delete_custom_sensor)
         self.delete_button.setEnabled(False)
+        style_dialog_button(self.delete_button, "danger")
         
         self.refresh_button = QPushButton(self.translator.translate("win_shared_button_refresh"))
         self.refresh_button.clicked.connect(self._refresh_available_sensors)
+        style_dialog_button(self.refresh_button, "compact")
         
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.edit_button)
@@ -130,10 +142,11 @@ class CustomSensorManagementWindow(SafeWindow):
         """Erstellt den Detail-Bereich."""
         group = QGroupBox(self.translator.translate("win_custom_sensor_details"))
         layout = QVBoxLayout(group)
+        configure_dialog_layout(layout, margins=(12, 12, 12, 12))
         
         # Sensor Info
         self.info_label = QLabel(self.translator.translate("win_custom_sensor_select_info"))
-        self.info_label.setWordWrap(True)
+        style_info_label(self.info_label, "muted")
         layout.addWidget(self.info_label)
         
         # Detaillierte Informationen
@@ -145,13 +158,15 @@ class CustomSensorManagementWindow(SafeWindow):
         # Explorer Sektion
         explorer_group = QGroupBox(self.translator.translate("win_custom_sensor_available"))
         explorer_layout = QVBoxLayout(explorer_group)
+        configure_dialog_layout(explorer_layout, margins=(12, 12, 12, 12))
         
         explorer_info = QLabel(self.translator.translate("win_custom_sensor_explorer_info"))
-        explorer_info.setWordWrap(True)
+        style_info_label(explorer_info, "subtle")
         explorer_layout.addWidget(explorer_info)
         
         self.explorer_button = QPushButton(self.translator.translate("win_custom_sensor_open_explorer"))
         self.explorer_button.clicked.connect(self._open_sensor_explorer)
+        style_dialog_button(self.explorer_button, "accent")
         explorer_layout.addWidget(self.explorer_button)
         
         layout.addWidget(explorer_group)
@@ -159,13 +174,15 @@ class CustomSensorManagementWindow(SafeWindow):
         # Status/Test Sektion
         test_group = QGroupBox(self.translator.translate("win_custom_sensor_test"))
         test_layout = QVBoxLayout(test_group)
+        configure_dialog_layout(test_layout, margins=(12, 12, 12, 12))
         
         self.test_button = QPushButton(self.translator.translate("win_custom_sensor_test_selected"))
         self.test_button.clicked.connect(self._test_selected_sensor)
         self.test_button.setEnabled(False)
+        style_dialog_button(self.test_button, "accent")
         
         self.test_result_label = QLabel("")
-        self.test_result_label.setWordWrap(True)
+        style_info_label(self.test_result_label, "subtle")
         
         test_layout.addWidget(self.test_button)
         test_layout.addWidget(self.test_result_label)
@@ -180,6 +197,7 @@ class CustomSensorManagementWindow(SafeWindow):
         """Lädt die Custom Sensors in die Tabelle."""
         custom_sensors = self.settings_manager.get_setting(SettingsKey.CUSTOM_SENSORS.value, {})
         
+        self.sensors_table.clearContents()
         self.sensors_table.setRowCount(len(custom_sensors))
         
         for row, (sensor_id, sensor_data) in enumerate(custom_sensors.items()):
@@ -198,7 +216,9 @@ class CustomSensorManagementWindow(SafeWindow):
             
             # Aktiviert
             enabled = sensor_data.get('enabled', True)
-            enabled_item = QTableWidgetItem("✓" if enabled else "✗")
+            enabled_item = QTableWidgetItem(
+                self.translator.translate('shared_yes') if enabled else self.translator.translate('shared_no')
+            )
             enabled_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.sensors_table.setItem(row, 3, enabled_item)
             
@@ -210,6 +230,29 @@ class CustomSensorManagementWindow(SafeWindow):
             self.sensors_table.setItem(row, 4, color_item)
             
         logging.info(f"Loaded {len(custom_sensors)} custom sensors into table")
+
+    def refresh_sensor_table(self, selected_sensor_id: str | None = None):
+        """Lädt die Tabelle neu und stellt die vorherige Auswahl nach Möglichkeit wieder her."""
+        if selected_sensor_id is None:
+            selected_rows = self.sensors_table.selectionModel().selectedRows()
+            if selected_rows:
+                selected_sensor_id = self.sensors_table.item(
+                    selected_rows[0].row(), 0
+                ).data(Qt.ItemDataRole.UserRole)
+
+        self._load_custom_sensors()
+
+        if selected_sensor_id is None:
+            self._clear_details()
+            return
+
+        for row in range(self.sensors_table.rowCount()):
+            item = self.sensors_table.item(row, 0)
+            if item and item.data(Qt.ItemDataRole.UserRole) == selected_sensor_id:
+                self.sensors_table.selectRow(row)
+                return
+
+        self._clear_details()
         
     def _on_selection_changed(self):
         """Wird aufgerufen, wenn die Auswahl in der Tabelle geändert wird."""
@@ -261,9 +304,7 @@ class CustomSensorManagementWindow(SafeWindow):
         
     def _add_custom_sensor(self):
         """Öffnet den Dialog zum Hinzufügen eines neuen Custom Sensors."""
-        dialog = CustomSensorDialog(self, {})
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._save_custom_sensor(dialog)
+        self._open_sensor_explorer()
             
     def _edit_custom_sensor(self):
         """Öffnet den Dialog zum Bearbeiten des ausgewählten Custom Sensors."""
@@ -286,20 +327,23 @@ class CustomSensorManagementWindow(SafeWindow):
             
     def _save_custom_sensor(self, dialog: CustomSensorDialog):
         """Speichert einen neuen Custom Sensor."""
-        # This method seems to have a bug, it calls dialog.get_color() which doesn't exist.
-        # I will assume it should be a default color for now.
+        identifier = dialog.get_identifier()
+        if not identifier:
+            logging.warning("Custom Sensor wurde nicht gespeichert, weil kein Identifier angegeben wurde.")
+            return
+
         custom_sensors = self.settings_manager.get_setting(SettingsKey.CUSTOM_SENSORS.value, {})
         
         sensor_id = str(uuid.uuid4())[:8]
         
         sensor_data = {
             'display_name': dialog.get_display_name(),
-            'identifier': dialog.sensor_data.get('identifier', ''),
+            'identifier': identifier,
             'sensor_type': dialog.sensor_data.get('sensor_type', ''),
             'hardware_name': dialog.sensor_data.get('hardware_name', ''),
             'sensor_name': dialog.sensor_data.get('sensor_name', ''),
             'unit': dialog.get_unit(),
-            'color': "#FFFFFF", # Default color
+            'color': "#FFFFFF",
             'enabled': True
         }
         
@@ -308,12 +352,20 @@ class CustomSensorManagementWindow(SafeWindow):
         
         logging.info(f"Custom Sensor hinzugefügt: {sensor_id} - {sensor_data['display_name']}")
         
-        self._load_custom_sensors()
+        refresh_table = getattr(self, "refresh_sensor_table", None)
+        if callable(refresh_table):
+            refresh_table(sensor_id)
+        else:
+            self._load_custom_sensors()
         self._notify_changes()
         
     def _update_custom_sensor(self, sensor_id: str, dialog: CustomSensorDialog):
         """Aktualisiert einen bestehenden Custom Sensor."""
-        # This method also seems to have the get_color() bug. I'll fix it similarly.
+        identifier = dialog.get_identifier()
+        if not identifier:
+            logging.warning("Custom Sensor '%s' wurde nicht aktualisiert, weil kein Identifier angegeben wurde.", sensor_id)
+            return
+
         custom_sensors = self.settings_manager.get_setting(SettingsKey.CUSTOM_SENSORS.value, {})
         
         if sensor_id not in custom_sensors:
@@ -321,14 +373,19 @@ class CustomSensorManagementWindow(SafeWindow):
             
         sensor_data = custom_sensors[sensor_id]
         sensor_data['display_name'] = dialog.get_display_name()
+        sensor_data['identifier'] = identifier
         sensor_data['unit'] = dialog.get_unit()
-        sensor_data['color'] = sensor_data.get('color', '#FFFFFF') # Keep existing color
+        sensor_data['color'] = sensor_data.get('color', '#FFFFFF')
         
         self.settings_manager.set_setting(SettingsKey.CUSTOM_SENSORS.value, custom_sensors)
         
         logging.info(f"Custom Sensor aktualisiert: {sensor_id} - {sensor_data['display_name']}")
         
-        self._load_custom_sensors()
+        refresh_table = getattr(self, "refresh_sensor_table", None)
+        if callable(refresh_table):
+            refresh_table(sensor_id)
+        else:
+            self._load_custom_sensors()
         self._notify_changes()
         
     def _delete_custom_sensor(self):
@@ -359,7 +416,11 @@ class CustomSensorManagementWindow(SafeWindow):
             
             logging.info(f"Custom Sensor gelöscht: {sensor_id} - {sensor_name}")
             
-            self._load_custom_sensors()
+            refresh_table = getattr(self, "refresh_sensor_table", None)
+            if callable(refresh_table):
+                refresh_table()
+            else:
+                self._load_custom_sensors()
             self._notify_changes()
             
     def _test_selected_sensor(self):
@@ -405,18 +466,19 @@ class CustomSensorManagementWindow(SafeWindow):
         QApplication.processEvents()
 
         try:
-            self.main_win.hw_manager.refresh_hardware_detection()
-            QMessageBox.information(
-                self,
-                self.translator.translate("win_custom_sensor_refresh_success_title"),
-                self.translator.translate("win_custom_sensor_refresh_success_text")
-            )
-        except Exception as e:
-            QMessageBox.warning(
-                self,
-                self.translator.translate("win_custom_sensor_refresh_error_title"),
-                f"{self.translator.translate('win_custom_sensor_refresh_error_text')}: {str(e)}"
-            )
+            success = self.main_win.action_handler.refresh_hardware_configuration()
+            if success:
+                QMessageBox.information(
+                    self,
+                    self.translator.translate("win_custom_sensor_refresh_success_title"),
+                    self.translator.translate("win_custom_sensor_refresh_success_text")
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    self.translator.translate("win_custom_sensor_refresh_error_title"),
+                    self.translator.translate("win_custom_sensor_refresh_error_text")
+                )
         finally:
             self.refresh_button.setText(self.translator.translate("win_shared_button_refresh"))
             self.refresh_button.setEnabled(True)
@@ -451,3 +513,27 @@ class CustomSensorManagementWindow(SafeWindow):
         """Benachrichtigt andere Komponenten über Änderungen an Custom Sensors."""
         if hasattr(self.main_win, 'action_handler'):
             self.main_win.action_handler.refresh_custom_sensors()
+
+    def export_language_refresh_state(self) -> dict:
+        selected_rows = self.sensors_table.selectionModel().selectedRows()
+        selected_sensor_id = None
+        if selected_rows:
+            selected_sensor_id = self.sensors_table.item(
+                selected_rows[0].row(), 0
+            ).data(Qt.ItemDataRole.UserRole)
+
+        return {
+            "selected_sensor_id": selected_sensor_id,
+            "test_result": self.test_result_label.text(),
+        }
+
+    def apply_language_refresh_state(self, state: dict):
+        selected_sensor_id = state.get("selected_sensor_id")
+        if selected_sensor_id is not None:
+            for row in range(self.sensors_table.rowCount()):
+                item = self.sensors_table.item(row, 0)
+                if item and item.data(Qt.ItemDataRole.UserRole) == selected_sensor_id:
+                    self.sensors_table.selectRow(row)
+                    break
+
+        self.test_result_label.setText(state.get("test_result", ""))

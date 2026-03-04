@@ -89,7 +89,8 @@ class TranslationManager:
 
         Priorisierung: Datei-Sprache > Hardcodierte Sprache > Fallback-Sprache.
         """
-        language_name = language_name.lower()
+        requested_language = language_name.lower()
+        language_name = requested_language
         
         # Merge dictionaries to ensure all keys are present
         base_translations = self._hardcoded_languages.get(language_name, self._hardcoded_languages[self.FALLBACK_LANGUAGE]).copy()
@@ -101,7 +102,7 @@ class TranslationManager:
             logging.info(f"Aktive Sprache auf '{language_name}' (hardcoded) gesetzt.")
         else:
             language_name = self.FALLBACK_LANGUAGE
-            logging.warning(f"Sprache '{language_name}' nicht gefunden, verwende '{self.FALLBACK_LANGUAGE}'.")
+            logging.warning(f"Sprache '{requested_language}' nicht gefunden, verwende '{self.FALLBACK_LANGUAGE}'.")
 
         self.translations = base_translations
         self.current_language = language_name

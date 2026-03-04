@@ -18,14 +18,28 @@ from core.main_window import SystemMonitor
 def setup_failsafe_logging(config_dir: Path):
     """Richtet ein einfaches Standard-Logging ein, das immer funktioniert."""
     log_file = config_dir / 'monitor.log'
+    handlers = [logging.StreamHandler()]
+    file_logging_available = False
+    file_logging_error = None
+
+    try:
+        handlers.insert(0, logging.FileHandler(log_file, encoding='utf-8'))
+        file_logging_available = True
+    except Exception as exc:
+        file_logging_error = exc
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler()
-        ]
+        handlers=handlers,
+        force=True,
     )
+    if not file_logging_available:
+        logging.warning(
+            "Failsafe-Logging nutzt nur StreamHandler, da '%s' nicht geoeffnet werden konnte: %s",
+            log_file,
+            file_logging_error,
+        )
 
 def is_admin() -> bool:
     """Prüft, ob die Anwendung mit Administratorrechten läuft (nur Windows)."""

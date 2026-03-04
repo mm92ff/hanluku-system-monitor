@@ -5,7 +5,12 @@ from PySide6.QtWidgets import (
     QPushButton, QComboBox, QWidget, QSpinBox
 )
 from PySide6.QtGui import QIcon
-from .base_window import SafeWindow
+from .base_window import (
+    SafeWindow,
+    configure_dialog_layout,
+    configure_dialog_window,
+    style_dialog_button,
+)
 from config.constants import SettingsKey
 
 class MiscSettingsWindow(SafeWindow):
@@ -23,7 +28,7 @@ class MiscSettingsWindow(SafeWindow):
         except AttributeError:
             self.setWindowIcon(QIcon())
 
-        self.setGeometry(300, 300, 450, 450)
+        configure_dialog_window(self, 450, 450)
         self.combo_boxes: dict[str, QComboBox] = {}
         self.init_ui()
         self.load_settings()
@@ -31,6 +36,7 @@ class MiscSettingsWindow(SafeWindow):
     def init_ui(self):
         """Initialisiert die Benutzeroberfläche."""
         main_layout = QVBoxLayout(self)
+        configure_dialog_layout(main_layout)
         grid_layout = QGridLayout()
         grid_layout.setColumnStretch(1, 1)
 
@@ -84,6 +90,8 @@ class MiscSettingsWindow(SafeWindow):
         save_button.clicked.connect(self.save_and_close)
         cancel_button = QPushButton(self.translator.translate("win_shared_button_cancel"))
         cancel_button.clicked.connect(self.close_safely)
+        style_dialog_button(save_button, "primary")
+        style_dialog_button(cancel_button, "secondary")
         button_layout.addStretch()
         button_layout.addWidget(save_button)
         button_layout.addWidget(cancel_button)
@@ -113,3 +121,18 @@ class MiscSettingsWindow(SafeWindow):
             self.main_app.detachable_manager.docker.set_gap(new_gap)
         
         self.close_safely()
+
+    def export_language_refresh_state(self) -> dict:
+        return {
+            "combos": {key: combo_box.currentData() for key, combo_box in self.combo_boxes.items()},
+            "gap": self.gap_spinbox.value(),
+        }
+
+    def apply_language_refresh_state(self, state: dict):
+        for key, current_value in state.get("combos", {}).items():
+            if key in self.combo_boxes:
+                combo_box = self.combo_boxes[key]
+                index = combo_box.findData(current_value)
+                if index != -1:
+                    combo_box.setCurrentIndex(index)
+        self.gap_spinbox.setValue(state.get("gap", self.gap_spinbox.value()))

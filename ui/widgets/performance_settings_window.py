@@ -9,7 +9,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIcon, QFont
 from PySide6.QtCore import QTimer
 from config import default_values
-from .base_window import SafeWindow
+from .base_window import (
+    SafeWindow,
+    configure_dialog_layout,
+    configure_dialog_window,
+    style_dialog_button,
+    style_info_label,
+    style_status_label,
+)
 from config.constants import SettingsKey
 
 class PerformanceSettingsWindow(SafeWindow):
@@ -26,7 +33,7 @@ class PerformanceSettingsWindow(SafeWindow):
         except AttributeError:
             self.setWindowIcon(QIcon())
 
-        self.setGeometry(400, 400, 500, 500)
+        configure_dialog_window(self, 500, 500)
         self.input_widgets = {}
         self.current_memory_mb = 0
         self.baseline_memory_mb = 0
@@ -38,6 +45,7 @@ class PerformanceSettingsWindow(SafeWindow):
     def init_ui(self):
         main_widget = QWidget(self)
         layout = QVBoxLayout(main_widget)
+        configure_dialog_layout(layout)
 
         thresholds_group = QGroupBox(self.translator.translate("win_perf_thresholds_group"))
         grid_layout = QGridLayout(thresholds_group)
@@ -74,10 +82,10 @@ class PerformanceSettingsWindow(SafeWindow):
 
         self.memory_info_layout = QHBoxLayout()
         self.memory_label = QLabel(f'{self.translator.translate("win_perf_current_memory")}: {self.translator.translate("win_perf_loading")}')
-        self.refresh_button = QPushButton("🔄")
-        self.refresh_button.setMaximumWidth(30)
+        self.refresh_button = QPushButton(self.translator.translate("win_shared_button_refresh"))
         self.refresh_button.setToolTip(self.translator.translate("win_perf_refresh_tooltip"))
         self.refresh_button.clicked.connect(self.update_memory_display)
+        style_dialog_button(self.refresh_button, "accent")
 
         self.memory_info_layout.addWidget(self.memory_label)
         self.memory_info_layout.addWidget(self.refresh_button)
@@ -91,7 +99,7 @@ class PerformanceSettingsWindow(SafeWindow):
         self.baseline_info_layout = QHBoxLayout()
         self.baseline_label = QLabel(f'{self.translator.translate("win_perf_current_baseline")}: {self.translator.translate("win_perf_loading")}')
         self.baseline_label.setFont(QFont("", 9))
-        self.baseline_label.setStyleSheet("color: #666; padding: 5px;")
+        style_status_label(self.baseline_label, "muted")
         self.baseline_info_layout.addWidget(self.baseline_label)
         self.baseline_info_layout.addStretch()
         baseline_layout.addLayout(self.baseline_info_layout)
@@ -101,8 +109,7 @@ class PerformanceSettingsWindow(SafeWindow):
         baseline_layout.addWidget(self.reset_baseline_checkbox)
 
         info_label = QLabel(self.translator.translate("win_perf_baseline_info_label"))
-        info_label.setStyleSheet("color: #666; font-size: 11px; margin: 5px;")
-        info_label.setWordWrap(True)
+        style_info_label(info_label, "muted")
         baseline_layout.addWidget(info_label)
 
         layout.addWidget(baseline_group)
@@ -113,6 +120,8 @@ class PerformanceSettingsWindow(SafeWindow):
         reset_button.clicked.connect(self.reset_settings)
         save_button = QPushButton(self.translator.translate("win_shared_button_save_close"))
         save_button.clicked.connect(self.save_and_close)
+        style_dialog_button(reset_button, "compact")
+        style_dialog_button(save_button, "primary")
 
         button_layout.addWidget(reset_button)
         button_layout.addStretch()
@@ -160,25 +169,27 @@ class PerformanceSettingsWindow(SafeWindow):
                         self.baseline_label.setText(f"{prefix}: {self.baseline_memory_mb:.1f} MB{diff_str}")
 
                         if self.current_memory_mb > 0:
-                            if abs(diff) < 10: color = "#4CAF50"
-                            elif abs(diff) < 30: color = "#FF9800"
-                            else: color = "#F44336"
-                            self.baseline_label.setStyleSheet(f"color: {color}; padding: 5px;")
+                            if abs(diff) < 10:
+                                style_status_label(self.baseline_label, "success")
+                            elif abs(diff) < 30:
+                                style_status_label(self.baseline_label, "warning")
+                            else:
+                                style_status_label(self.baseline_label, "error")
                         else:
-                            self.baseline_label.setStyleSheet("color: #666; padding: 5px;")
+                            style_status_label(self.baseline_label, "subtle")
                     else:
                         self.baseline_label.setText(f'{prefix}: {self.translator.translate("shared_unavailable")}')
-                        self.baseline_label.setStyleSheet("color: #666; padding: 5px;")
+                        style_status_label(self.baseline_label, "subtle")
                 else:
                     self.baseline_label.setText(f'{prefix}: {self.translator.translate("win_perf_tracker_unavailable")}')
-                    self.baseline_label.setStyleSheet("color: #666; padding: 5px;")
+                    style_status_label(self.baseline_label, "subtle")
             else:
                 self.baseline_label.setText(f'{prefix}: {self.translator.translate("win_perf_worker_unavailable")}')
-                self.baseline_label.setStyleSheet("color: #666; padding: 5px;")
+                style_status_label(self.baseline_label, "subtle")
         except Exception as e:
             logging.error(f"Fehler beim Laden der Baseline-Info: {e}")
             self.baseline_label.setText(f'{prefix}: {self.translator.translate("shared_error_loading")}')
-            self.baseline_label.setStyleSheet("color: #F44336; padding: 5px;")
+            style_status_label(self.baseline_label, "error")
 
     def load_settings(self):
         for key, widget in self.input_widgets.items():
@@ -244,3 +255,17 @@ class PerformanceSettingsWindow(SafeWindow):
                     self.translator.translate("dlg_baseline_reset_unknown_mem_text")
                 )
         self.close_safely()
+
+    def export_language_refresh_state(self) -> dict:
+        return {
+            "values": {key: widget.value() for key, widget in self.input_widgets.items()},
+            "show_warnings": self.show_warnings_checkbox.isChecked(),
+            "reset_baseline": self.reset_baseline_checkbox.isChecked(),
+        }
+
+    def apply_language_refresh_state(self, state: dict):
+        for key, value in state.get("values", {}).items():
+            if key in self.input_widgets:
+                self.input_widgets[key].setValue(value)
+        self.show_warnings_checkbox.setChecked(state.get("show_warnings", self.show_warnings_checkbox.isChecked()))
+        self.reset_baseline_checkbox.setChecked(state.get("reset_baseline", self.reset_baseline_checkbox.isChecked()))

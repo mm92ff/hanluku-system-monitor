@@ -13,10 +13,11 @@ from functools import partial
 from PySide6.QtWidgets import (
     QApplication, QInputDialog, QMessageBox, QFileDialog
 )
-from PySide6.QtCore import QTimer, QThread, Signal
+from PySide6.QtCore import QTimer
 
-from config.config import CONFIG_DIR, reconfigure_logging
+from config.config import CONFIG_DIR
 from config.constants import SettingsKey
+from detachable.position_persistence import save_layout
 from ui.widgets.reorder_window import ReorderWindow
 from ui.widgets.color_management_window import ColorManagementWindow
 from ui.widgets.alarm_settings_window import AlarmSettingsWindow
@@ -58,26 +59,26 @@ class ActionHandler:
         self.custom_sensor_management_window: Optional[CustomSensorManagementWindow] = None
         self.help_window: Optional[HelpWindow] = None
         self.monitoring_window: Optional[MonitoringWindow] = None
+        self._window_registry = (
+            ("reorder_window", ReorderWindow),
+            ("color_management_window", ColorManagementWindow),
+            ("alarm_settings_window", AlarmSettingsWindow),
+            ("sensor_diagnosis_window", SensorDiagnosisWindow),
+            ("health_status_window", HealthStatusWindow),
+            ("label_editor_window", LabelEditorWindow),
+            ("performance_settings_window", PerformanceSettingsWindow),
+            ("font_settings_window", FontSettingsWindow),
+            ("misc_settings_window", MiscSettingsWindow),
+            ("widget_settings_window", WidgetSettingsWindow),
+            ("custom_sensor_management_window", CustomSensorManagementWindow),
+            ("help_window", HelpWindow),
+            ("monitoring_window", MonitoringWindow),
+        )
 
     def show_set_width_dialog(self, metric_key: str):
         """Öffnet einen Dialog, um die Breite eines Widgets manuell einzustellen."""
         manager = self.main_win.detachable_manager
-        if not (widget := manager.active_widgets.get(metric_key)):
-            return
-
-        min_w = self.settings_manager.get_setting(SettingsKey.WIDGET_MIN_WIDTH.value, 50)
-        max_w = self.settings_manager.get_setting(SettingsKey.WIDGET_MAX_WIDTH.value, 2000)
-
-        current_width = widget.width()
-        new_width, ok = QInputDialog.getInt(
-            self.main_win,
-            self.translator.translate("dlg_title_set_width"),
-            self.translator.translate("dlg_label_set_width", widget_name=widget.label.text()),
-            current_width, min_w, max_w, 5
-        )
-
-        if ok:
-            manager.set_widget_width(metric_key, new_width)
+        manager.show_widget_width_adjuster(metric_key)
 
 
     def _show_single_instance_window(self, attr_name: str, window_class):
@@ -99,17 +100,78 @@ class ActionHandler:
 
     def set_language(self, language_name: str):
         """Setzt die Anwendungssprache und aktualisiert die UI dynamisch ohne Neustart."""
-        self.settings_manager.set_setting("language", language_name)
-        self.main_win.ui_manager.refresh_metric_definitions()
-        self.main_win.tray_icon_manager.rebuild_menu()
-        logging.info(f"Sprache dynamisch zu '{language_name}' gewechselt und UI aktualisiert.")
+        self.settings_manager.set_setting(SettingsKey.LANGUAGE.value, language_name)
+        logging.info(f"Sprache dynamisch zu '{language_name}' gewechselt.")
+
+    def refresh_open_windows_for_language_change(self):
+        """Aktualisiert offene Fenster nach einem Sprachwechsel."""
+        for attr_name, window_class in self._window_registry:
+            self._refresh_window_for_language_change(attr_name, window_class)
+
+    def _refresh_window_for_language_change(self, attr_name: str, window_class):
+        win = getattr(self, attr_name, None)
+        if win is None:
+            return
+
+        try:
+            if win.isHidden():
+                setattr(self, attr_name, None)
+                return
+        except RuntimeError:
+            setattr(self, attr_name, None)
+            return
+
+        if hasattr(win, "retranslate_ui"):
+            try:
+                win.retranslate_ui()
+            except Exception:
+                logging.exception("Fehler beim Aktualisieren von %s nach Sprachwechsel.", attr_name)
+            return
+
+        state = None
+        try:
+            if hasattr(win, "export_language_refresh_state"):
+                state = win.export_language_refresh_state()
+            geometry = win.saveGeometry()
+            was_maximized = win.isMaximized()
+        except RuntimeError:
+            setattr(self, attr_name, None)
+            return
+
+        try:
+            win.close()
+        except Exception:
+            logging.exception("Fehler beim Schliessen von %s waehrend Sprachwechsel.", attr_name)
+
+        new_win = window_class(self.main_win)
+        setattr(self, attr_name, new_win)
+
+        if state is not None and hasattr(new_win, "apply_language_refresh_state"):
+            try:
+                new_win.apply_language_refresh_state(state)
+            except Exception:
+                logging.exception("Fehler beim Wiederherstellen von %s nach Sprachwechsel.", attr_name)
+
+        new_win.restoreGeometry(geometry)
+        if was_maximized:
+            new_win.showMaximized()
+        else:
+            new_win.show()
+        new_win.activateWindow()
+        new_win.raise_()
 
     # Layout-Management
     def prompt_and_save_layout(self):
         text, ok = QInputDialog.getText(self.main_win, self.translator.translate("dlg_title_save_layout"), self.translator.translate("dlg_label_save_layout"))
         if ok and text:
             self.main_win.detachable_manager._synchronize_group_layout()
-            self.main_win.detachable_manager.save_layout_as(text)
+            if not self.main_win.detachable_manager.save_layout_as(text):
+                QMessageBox.critical(
+                    self.main_win,
+                    self.translator.translate("shared_error_title"),
+                    self.translator.translate("dlg_layout_save_failed_text"),
+                )
+                return
             self.main_win.tray_icon_manager.rebuild_menu()
 
     def load_named_layout(self, name: str):
@@ -124,7 +186,13 @@ class ActionHandler:
         if ok and item:
             reply = QMessageBox.question(self.main_win, self.translator.translate("dlg_confirm_delete_layout_title"), self.translator.translate("dlg_confirm_delete_layout_text", layout_name=item), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
-                self.main_win.detachable_manager.delete_layout(item)
+                if not self.main_win.detachable_manager.delete_layout(item):
+                    QMessageBox.critical(
+                        self.main_win,
+                        self.translator.translate("shared_error_title"),
+                        self.translator.translate("dlg_layout_delete_failed_text"),
+                    )
+                    return
                 self.main_win.tray_icon_manager.rebuild_menu()
 
     def reset_all_settings(self):
@@ -132,12 +200,35 @@ class ActionHandler:
         Setzt ALLE Einstellungen und Widget-Positionen auf Standardwerte zurück.
         Alle Widgets werden wieder sichtbar und in der Standardanordnung angezeigt.
         """
+        reply = QMessageBox.question(
+            self.main_win,
+            self.translator.translate("dlg_confirm_reset_all_runtime_title"),
+            self.translator.translate("dlg_confirm_reset_all_runtime_text"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if not self.settings_manager.reset_to_defaults():
+            QMessageBox.critical(
+                self.main_win,
+                self.translator.translate("shared_error_title"),
+                self.translator.translate("dlg_reset_failed_text"),
+            )
+            return
+
+        default_language = self.settings_manager.get_setting(SettingsKey.LANGUAGE.value, "german")
+        self.main_win.context.translator.set_language(default_language)
+
         # 1. Alle aktuell angezeigten Widgets schließen
         self.main_win.detachable_manager._deactivate_view()
-        
-        # 2. ALLE Einstellungen auf Standardwerte zurücksetzen
-        self.settings_manager.reset_to_defaults()
-        
+
+        # 2. Persistierte Layouts vollständig zurücksetzen
+        self.main_win.detachable_manager.layouts.clear()
+        self.main_win.detachable_manager.active_layout_name = None
+        save_layout(self.main_win.detachable_manager.layouts, CONFIG_DIR)
+
         # 3. Dynamische Sensoren (Storage, Custom) erneut zur Konfiguration hinzufügen
         self.main_win.ui_manager.update_dynamic_metric_order()
 
@@ -149,7 +240,7 @@ class ActionHandler:
         # 5. UI-Komponenten über die Änderungen informieren und Neuaufbau anstoßen
         QTimer.singleShot(0, self._execute_post_reset_ui_setup)
         
-        logging.info("VOLLSTÄNDIGER Reset durchgeführt: Alle Einstellungen und Positionen auf Standardwerte zurückgesetzt")
+        logging.info("Vollständiger Reset durchgeführt: Einstellungen, Positionen und gespeicherte Layouts wurden zurückgesetzt.")
 
     def _execute_post_reset_ui_setup(self):
         """Führt die UI-Neuerstellung nach einem Reset in der korrekten Reihenfolge aus."""
@@ -174,6 +265,7 @@ class ActionHandler:
         try:
             # UI-Manager über Sprachänderung informieren (falls Sprache zurückgesetzt wurde)
             self.main_win.ui_manager.refresh_metric_definitions()
+            self.main_win.context.data_handler.refresh_custom_sensors()
             
             # Stile auf alle Widgets anwenden
             self.main_win.ui_manager.apply_styles()
@@ -183,9 +275,13 @@ class ActionHandler:
             
             # Menü neu aufbauen für aktualisierte Einstellungen
             self.main_win.tray_icon_manager.rebuild_menu()
+            self.refresh_open_windows_for_language_change()
             
             # Worker-Thread neu starten (falls Update-Intervall geändert wurde)
             self.main_win.restart_worker_thread()
+
+            if self.main_win.last_data:
+                self.main_win.context.data_handler.process_new_data(self.main_win.last_data)
             
         except Exception as e:
             logging.error(f"Fehler beim UI-Update nach vollständigem Reset: {e}", exc_info=True)
@@ -206,7 +302,7 @@ class ActionHandler:
         manager = self.main_win.detachable_manager
         if visible:
             if metric_key not in manager.active_widgets:
-                manager.detach_metric(metric_key, manager.get_safe_position_for_new_widget())
+                manager.detach_metric(metric_key)
         else:
              manager.attach_metric(metric_key)
         self.main_win.tray_icon_manager.rebuild_menu()
@@ -216,12 +312,65 @@ class ActionHandler:
         """Öffnet das Custom Sensor Management Fenster."""
         self._show_single_instance_window('custom_sensor_management_window', CustomSensorManagementWindow)
 
+    def sync_after_hardware_change(self):
+        """Synchronisiert UI und MenÃ¼s nach einer Hardware-Neuerkennung."""
+        self.main_win.ui_manager.refresh_metric_definitions()
+        self.main_win.tray_icon_manager.rebuild_menu()
+
+        if win := getattr(self, 'monitoring_window', None):
+            try:
+                if not win.isHidden():
+                    win._populate_sensor_list()
+                    win._update_graph_and_stats()
+            except RuntimeError:
+                self.monitoring_window = None
+
+        if win := getattr(self, 'sensor_diagnosis_window', None):
+            try:
+                if not win.isHidden():
+                    win.update_hardware_list()
+                    win._populate_sensor_tree()
+                    win.load_cache_info()
+            except RuntimeError:
+                self.sensor_diagnosis_window = None
+
+    def refresh_hardware_configuration(self) -> bool:
+        """FÃ¼hrt eine Hardware-Neuerkennung mit pausiertem Worker und UI-Sync aus."""
+        try:
+            result = self.main_win.run_with_paused_worker(
+                lambda: self.main_win.hw_manager.redetect_hardware(reset_cache=False)
+            )
+            if result.success:
+                self.sync_after_hardware_change()
+                logging.info(result.message)
+                return True
+            logging.error(result.message)
+            return False
+        except Exception:
+            logging.exception("Fehler beim Aktualisieren der Hardware-Konfiguration.")
+            return False
+
     def refresh_custom_sensors(self):
         """Aktualisiert Custom Sensors nach Änderungen und zeigt neue Widgets sofort an."""
         active_before = set(self.main_win.detachable_manager.active_widgets.keys())
 
         self.main_win.ui_manager.refresh_metric_definitions()
         self.main_win.tray_icon_manager.rebuild_menu()
+
+        if win := getattr(self, 'custom_sensor_management_window', None):
+            try:
+                if not win.isHidden():
+                    win.refresh_sensor_table()
+            except RuntimeError:
+                self.custom_sensor_management_window = None
+
+        if win := getattr(self, 'monitoring_window', None):
+            try:
+                if not win.isHidden():
+                    win._populate_sensor_list()
+                    win._update_graph_and_stats()
+            except RuntimeError:
+                self.monitoring_window = None
 
         custom_sensors = self.settings_manager.get_setting(SettingsKey.CUSTOM_SENSORS.value, {})
         for sensor_id in custom_sensors.keys():
@@ -255,30 +404,6 @@ class ActionHandler:
         self.settings_manager.set_setting(SettingsKey.SHOW_BAR_GRAPHS.value, checked)
         self.main_win.ui_manager.apply_styles()
 
-    def show_bar_width_dialog(self):
-        current_value = self.settings_manager.get_setting(SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value, 9)
-        new_value, ok = QInputDialog.getInt(
-            self.main_win,
-            self.translator.translate("dlg_title_bar_width"),
-            self.translator.translate("dlg_label_bar_width"),
-            current_value, 2, 20
-        )
-        if ok:
-            self.settings_manager.set_setting(SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value, new_value)
-            self.main_win.ui_manager.apply_styles()
-
-    def show_bar_height_dialog(self):
-        current_value = self.settings_manager.get_setting(SettingsKey.BAR_GRAPH_HEIGHT_FACTOR.value, 0.65)
-        new_value, ok = QInputDialog.getDouble(
-            self.main_win,
-            self.translator.translate("dlg_title_bar_height"),
-            self.translator.translate("dlg_label_bar_height"),
-            current_value, 0.1, 2.0, 2
-        )
-        if ok:
-            self.settings_manager.set_setting(SettingsKey.BAR_GRAPH_HEIGHT_FACTOR.value, new_value)
-            self.main_win.ui_manager.apply_styles()
-
     def show_opacity_dialog(self):
         current_value = self.settings_manager.get_setting(SettingsKey.BACKGROUND_ALPHA.value, 200)
         new_value, ok = QInputDialog.getInt(
@@ -293,11 +418,19 @@ class ActionHandler:
 
     # Hardware-Auswahl
     def select_hardware(self, key: str, value: str, is_gpu: bool = False, is_cpu: bool = False):
-        if is_gpu:
-            value = self.main_win.hw_manager.update_selected_gpu_sensors(value)
-        if is_cpu:
-            value = self.main_win.hw_manager.update_selected_cpu_sensors(value)
-        self.settings_manager.set_setting(key, value)
+        def apply_selection():
+            resolved_value = value
+            if is_gpu:
+                resolved_value = self.main_win.hw_manager.update_selected_gpu_sensors(resolved_value)
+            if is_cpu:
+                resolved_value = self.main_win.hw_manager.update_selected_cpu_sensors(resolved_value)
+            self.settings_manager.set_setting(key, resolved_value)
+            return resolved_value
+
+        return self.main_win.run_with_paused_worker(
+            apply_selection,
+            should_pause=True,
+        )
 
     def set_unit(self, key: str, value: str):
         self.settings_manager.set_setting(key, value)
@@ -353,6 +486,7 @@ class ActionHandler:
         )
         if ok:
             self.settings_manager.set_setting(SettingsKey.TRAY_BLINK_RATE_SEC.value, new_value)
+            self.main_win.tray_icon_manager.update_tray_icon()
 
     def show_blink_duration_dialog(self):
         blink_rate_sec = self.settings_manager.get_setting(SettingsKey.TRAY_BLINK_RATE_SEC.value, 1.0)
@@ -366,6 +500,7 @@ class ActionHandler:
         )
         if ok:
             self.settings_manager.set_setting(SettingsKey.TRAY_BLINK_DURATION_MS.value, new_value)
+            self.main_win.tray_icon_manager.update_tray_icon()
 
     # System-Einstellungen
     def show_update_interval_dialog(self):
@@ -378,11 +513,9 @@ class ActionHandler:
         )
         if ok:
             self.settings_manager.set_setting(SettingsKey.UPDATE_INTERVAL_MS.value, new_value)
-            QTimer.singleShot(100, self.main_win.restart_worker_thread)
 
     def set_logging_level(self, key: str, level: str):
         self.settings_manager.set_setting(key, level)
-        reconfigure_logging(self.settings_manager.get_all_settings())
         self.main_win.tray_icon_manager.rebuild_menu()
 
     def show_log_size_dialog(self):
@@ -395,7 +528,6 @@ class ActionHandler:
         )
         if ok:
             self.settings_manager.set_setting(SettingsKey.LOG_MAX_SIZE_MB.value, new_value)
-            reconfigure_logging(self.settings_manager.get_all_settings())
 
     def show_log_backup_dialog(self):
         current_value = self.settings_manager.get_setting(SettingsKey.LOG_BACKUP_COUNT.value, 5)
@@ -407,7 +539,6 @@ class ActionHandler:
         )
         if ok:
             self.settings_manager.set_setting(SettingsKey.LOG_BACKUP_COUNT.value, new_value)
-            reconfigure_logging(self.settings_manager.get_all_settings())
 
     # Fenster-Dialoge
     def show_font_dialog(self): self._show_single_instance_window('font_settings_window', FontSettingsWindow)
@@ -430,7 +561,7 @@ class ActionHandler:
 
     def show_health_status_window(self):
         self._show_single_instance_window('health_status_window', HealthStatusWindow)
-        if win := getattr(self, 'health_status_window', None): QTimer.singleShot(50, win.update_report)
+        if win := getattr(self, 'health_status_window', None): win.update_report()
 
     def show_help_window(self):
         self._show_single_instance_window('help_window', HelpWindow)
@@ -440,36 +571,35 @@ class ActionHandler:
         self._show_single_instance_window('monitoring_window', MonitoringWindow)
 
     def show_sensor_diagnosis(self):
-        self._show_single_instance_window('sensor_diagnosis_window', SensorDiagnosisWindow)
-        if not (win := getattr(self, 'sensor_diagnosis_window', None)): return
-        
-        if hasattr(self, 'diag_thread') and self.diag_thread and self.diag_thread.isRunning():
-            logging.debug("Diagnose-Thread läuft bereits. Überspringe Start.")
-            return
+        win = getattr(self, 'sensor_diagnosis_window', None)
+        try:
+            if win:
+                win.show()
+                win.activateWindow()
+                win.raise_()
+                return
+        except RuntimeError:
+            logging.debug("SensorDiagnosisWindow C++ Objekt wurde gelöscht, erstelle neue Instanz")
+            self.sensor_diagnosis_window = None
 
-        win.set_diagnosis_info(self.translator.translate("diag_status_loading_data"))
-        class DiagnosisThread(QThread):
-            finished = Signal(str)
-            def __init__(self, hw_manager): super().__init__(); self.hw_manager = hw_manager
-            def run(self): self.finished.emit(self.hw_manager.run_sensor_diagnosis())
-        
-        self.diag_thread = DiagnosisThread(self.main_win.hw_manager)
-        self.diag_thread.finished.connect(win.set_diagnosis_info)
-        self.diag_thread.start()
+        self._show_single_instance_window('sensor_diagnosis_window', SensorDiagnosisWindow)
 
     # Import/Export
     def export_settings(self):
         file_path, _ = QFileDialog.getSaveFileName(self.main_win, self.translator.translate("dlg_title_export"), "settings_export.json", self.translator.translate("shared_file_filter_json"))
         if not file_path: return
-        self.settings_manager.export_settings(file_path)
-        QMessageBox.information(self.main_win, self.translator.translate("dlg_export_success_title"), self.translator.translate("dlg_export_success_text", file_path=file_path))
+        if self.settings_manager.export_settings(file_path):
+            QMessageBox.information(self.main_win, self.translator.translate("dlg_export_success_title"), self.translator.translate("dlg_export_success_text", file_path=file_path))
+        else:
+            QMessageBox.critical(self.main_win, self.translator.translate("dlg_export_failed_title"), self.translator.translate("dlg_export_failed_text"))
 
     def import_settings(self):
         if QMessageBox.question(self.main_win, self.translator.translate("dlg_title_import"), self.translator.translate("dlg_confirm_import_text"), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes: return
         file_path, _ = QFileDialog.getOpenFileName(self.main_win, self.translator.translate("dlg_title_import"), "", self.translator.translate("shared_file_filter_json"))
         if not file_path: return
         if self.settings_manager.import_settings(file_path):
-            if QMessageBox.question(self.main_win, self.translator.translate("dlg_title_import"), self.translator.translate("dlg_import_success_restart_prompt"), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes) == QMessageBox.StandardButton.Yes: self.main_win.restart_app()
+            QMessageBox.information(self.main_win, self.translator.translate("dlg_import_success_title"), self.translator.translate("dlg_import_success_text"))
+            self.main_win.restart_app()
         else:
             QMessageBox.critical(self.main_win, self.translator.translate("dlg_import_failed_title"), self.translator.translate("dlg_import_failed_text"))
 
@@ -488,4 +618,5 @@ class ActionHandler:
             elif platform.system() == "Darwin": subprocess.run(["open", config_path], check=True)
             else: subprocess.run(["xdg-open", config_path], check=True)
         except Exception as e:
+            logging.exception("Konfigurationsordner konnte nicht geoeffnet werden.")
             QMessageBox.warning(self.main_win, self.translator.translate("shared_error_title"), self.translator.translate("dlg_open_folder_failed_text", e=e))

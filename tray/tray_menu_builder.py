@@ -112,6 +112,8 @@ class TrayMenuBuilder:
         metric_order = self.settings_manager.get_setting(SettingsKey.METRIC_ORDER.value, []) or list(self.ui_manager.metric_widgets.keys())
         
         for key in metric_order:
+            if key.startswith("custom_"):
+                continue
             if not (widget_info := self.ui_manager.metric_widgets.get(key)):
                 continue
 
@@ -127,8 +129,10 @@ class TrayMenuBuilder:
         """Erstellt das Menü zur Hardware-Auswahl."""
         hardware_menu = menu.addMenu(self.translator.translate("menu_hardware_select"))
         hw_manager = self.main_win.hw_manager
+        auto_label = self.translator.translate("shared_auto")
         
-        cpus = {str(cpu.Identifier): cpu.Name for cpu in hw_manager.cpus}
+        cpus = {"auto": auto_label}
+        cpus.update({str(cpu.Identifier): cpu.Name for cpu in hw_manager.cpus})
         if cpus:
             self._create_exclusive_action_group_menu(
                 hardware_menu, self.translator.translate("win_color_category_cpu"),
@@ -146,7 +150,8 @@ class TrayMenuBuilder:
         self._create_exclusive_action_group_menu(hardware_menu, self.translator.translate("menu_disk_io_select"), SettingsKey.SELECTED_DISK_IO_DEVICE.value, {d: d for d in disks}, partial(self.action_handler.select_hardware, is_gpu=False, is_cpu=False))
         
         if hw_manager.gpu_supported:
-            gpus = {str(gpu.Identifier): gpu.Name for gpu in hw_manager.gpus}
+            gpus = {"auto": auto_label}
+            gpus.update({str(gpu.Identifier): gpu.Name for gpu in hw_manager.gpus})
             self._create_exclusive_action_group_menu(hardware_menu, self.translator.translate("menu_gpu_select"), SettingsKey.SELECTED_GPU_IDENTIFIER.value, gpus, partial(self.action_handler.select_hardware, is_gpu=True, is_cpu=False))
 
     def _create_custom_sensors_menu(self, menu: QMenu):
@@ -242,8 +247,6 @@ class TrayMenuBuilder:
         )
         settings_menu.addSeparator()
 
-        settings_menu.addAction(self.translator.translate("menu_config_bar_width"), self.action_handler.show_bar_width_dialog)
-        settings_menu.addAction(self.translator.translate("menu_config_bar_height"), self.action_handler.show_bar_height_dialog)
         settings_menu.addAction(self.translator.translate("menu_config_reorder"), self.action_handler.show_reorder_window)
         settings_menu.addAction(self.translator.translate("menu_config_font"), self.action_handler.show_font_dialog)
         settings_menu.addAction(self.translator.translate("menu_config_labels"), self.action_handler.show_label_editor_window)
@@ -263,8 +266,12 @@ class TrayMenuBuilder:
     def _create_language_menu(self, parent_menu: QMenu):
         """Erstellt das Sprachauswahl-Menü."""
         languages = self.translator.get_available_languages()
-        current_lang = self.settings_manager.get_setting("language", "german")
-        options = {lang: lang.capitalize() for lang in languages}
+        current_lang = self.settings_manager.get_setting(SettingsKey.LANGUAGE.value, "german")
+        options = {}
+        for lang in languages:
+            translation_key = f"language_name_{lang}"
+            translated_name = self.translator.translate(translation_key)
+            options[lang] = translated_name if translated_name != translation_key else lang.capitalize()
         self._create_exclusive_action_group_menu(
             parent_menu, self.translator.translate("menu_language"),
             None, options, self.action_handler.set_language, current_value=current_lang
@@ -278,7 +285,7 @@ class TrayMenuBuilder:
         logs_menu.addSeparator()
         self._create_exclusive_action_group_menu(
             logs_menu, self.translator.translate("menu_config_log_level"),
-            "log_level", {"INFO": "INFO", "DEBUG": "DEBUG"},
+            SettingsKey.LOG_LEVEL.value, {"INFO": "INFO", "DEBUG": "DEBUG"},
             self.action_handler.set_logging_level
         )
 

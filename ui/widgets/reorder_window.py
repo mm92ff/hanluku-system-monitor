@@ -11,7 +11,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 
-from .base_window import SafeWindow
+from .base_window import (
+    SafeWindow,
+    configure_dialog_layout,
+    configure_dialog_window,
+    style_dialog_button,
+    style_list_widget,
+)
 from config.constants import SettingsKey
 
 if TYPE_CHECKING:
@@ -35,7 +41,7 @@ class ReorderWindow(SafeWindow):
         except AttributeError:
             self.setWindowIcon(QIcon())
 
-        self.setGeometry(400, 400, 400, 500)
+        configure_dialog_window(self, 400, 500)
         self.display_map: Dict[str, str] = {}
         self.clean_to_original_key: Dict[str, str] = {}
         self.original_to_clean_key: Dict[str, str] = {}
@@ -47,10 +53,25 @@ class ReorderWindow(SafeWindow):
         """Ersetzt alle nicht-alphanumerischen Zeichen durch einen Unterstrich."""
         return re.sub(r'[^a-zA-Z0-9_]', '_', key)
 
+    def _get_reorderable_original_keys(self) -> List[str]:
+        """Gibt nur die aktuell ausgewählten/aktiven Widgets in stabiler Reihenfolge zurück."""
+        current_order = self.settings_manager.get_setting(SettingsKey.METRIC_ORDER.value, [])
+        active_keys = set(self.main_app.detachable_manager.active_widgets.keys())
+
+        ordered_active_keys = [key for key in current_order if key in active_keys]
+        remaining_active_keys = [
+            key for key in self.main_app.detachable_manager.active_widgets.keys()
+            if key not in ordered_active_keys
+        ]
+        return ordered_active_keys + remaining_active_keys
+
     def populate_mappings_and_load_order(self):
         """Erstellt Mappings und lädt die Liste."""
         all_widgets_info = self.main_app.ui_manager.metric_widgets
-        for original_key, info in all_widgets_info.items():
+        for original_key in self._get_reorderable_original_keys():
+            info = all_widgets_info.get(original_key)
+            if not info:
+                continue
             clean_key = self._sanitize_key(original_key)
             display_name = info.get('full_text', original_key).strip().replace(':', '')
             
@@ -63,12 +84,13 @@ class ReorderWindow(SafeWindow):
     def init_ui(self):
         """Initialisiert die Benutzeroberfläche."""
         layout = QVBoxLayout(self)
+        configure_dialog_layout(layout)
         instruction_label = QLabel(self.translator.translate("win_reorder_info"))
         layout.addWidget(instruction_label)
 
         self.list_widget = QListWidget(self)
         self.list_widget.setDragDropMode(QListWidget.DragDropMode.InternalMove)
-        self.list_widget.setStyleSheet("QListWidget::item { margin: 5px; }")
+        style_list_widget(self.list_widget, item_margin=5)
         layout.addWidget(self.list_widget)
 
         button_layout = QHBoxLayout()
@@ -76,6 +98,8 @@ class ReorderWindow(SafeWindow):
         save_button.clicked.connect(self.save_order_and_close)
         cancel_button = QPushButton(self.translator.translate("win_shared_button_cancel"))
         cancel_button.clicked.connect(self.close_safely)
+        style_dialog_button(save_button, "primary")
+        style_dialog_button(cancel_button, "secondary")
 
         button_layout.addStretch()
         button_layout.addWidget(save_button)
@@ -106,18 +130,52 @@ class ReorderWindow(SafeWindow):
             item = QListWidgetItem(display_name, self.list_widget)
             item.setData(Qt.ItemDataRole.UserRole, clean_key)
 
+    def _build_complete_metric_order(self, reordered_visible_keys: List[str]) -> List[str]:
+        """Mischt die neue sichtbare Reihenfolge in die vollständige globale Reihenfolge ein."""
+        current_order = self.settings_manager.get_setting(SettingsKey.METRIC_ORDER.value, [])
+        reorderable_keys = set(self.clean_to_original_key.values())
+
+        full_metric_order: List[str] = []
+        seen_keys = set()
+        for key in current_order:
+            if key not in seen_keys:
+                full_metric_order.append(key)
+                seen_keys.add(key)
+
+        for key in self.main_app.ui_manager.metric_widgets.keys():
+            if key not in seen_keys:
+                full_metric_order.append(key)
+                seen_keys.add(key)
+
+        reordered_iter = iter(reordered_visible_keys)
+        merged_order: List[str] = []
+        for key in full_metric_order:
+            if key in reorderable_keys:
+                next_visible_key = next(reordered_iter, None)
+                if next_visible_key is not None:
+                    merged_order.append(next_visible_key)
+            else:
+                merged_order.append(key)
+
+        for remaining_key in reordered_iter:
+            if remaining_key not in merged_order:
+                merged_order.append(remaining_key)
+
+        return merged_order
+
     def save_order_and_close(self):
         """Speichert die neue Reihenfolge und aktualisiert das UI robust ohne feste Timer."""
         try:
             # Schritt 1: Neue Reihenfolge aus der UI auslesen
             new_order_of_clean_keys = [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
-            new_original_order = [self.clean_to_original_key.get(clean_key, clean_key) for clean_key in new_order_of_clean_keys]
+            new_visible_order = [self.clean_to_original_key.get(clean_key, clean_key) for clean_key in new_order_of_clean_keys]
+            new_original_order = self._build_complete_metric_order(new_visible_order)
 
             # Schritt 2: Neue Reihenfolge in den Einstellungen speichern
             self.settings_manager.set_setting(SettingsKey.METRIC_ORDER.value, new_original_order)
             
             # Schritt 3: Widgets direkt im UI neu anordnen
-            self._reorder_widgets_directly(new_original_order)
+            self._reorder_widgets_directly(new_visible_order)
             
             # Schritt 4: UI-Definitionen aktualisieren und Tray-Menü neu aufbauen
             self.main_app.ui_manager.refresh_metric_definitions()
@@ -158,3 +216,29 @@ class ReorderWindow(SafeWindow):
             for widget in widgets_to_reorder:
                 widget.move(current_x, start_y)
                 current_x += widget.width() + manager.docker.gap
+
+    def export_language_refresh_state(self) -> dict:
+        return {
+            "order": [
+                self.list_widget.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self.list_widget.count())
+            ]
+        }
+
+    def apply_language_refresh_state(self, state: dict):
+        desired_order = state.get("order", [])
+        if not desired_order:
+            return
+
+        current_items = {}
+        while self.list_widget.count():
+            item = self.list_widget.takeItem(0)
+            current_items[item.data(Qt.ItemDataRole.UserRole)] = item
+
+        for clean_key in desired_order:
+            item = current_items.pop(clean_key, None)
+            if item is not None:
+                self.list_widget.addItem(item)
+
+        for item in current_items.values():
+            self.list_widget.addItem(item)

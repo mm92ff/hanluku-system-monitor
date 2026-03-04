@@ -1,7 +1,0 @@
-N
-test
-Y
-v1.1.0-beta
-N
-N
-N

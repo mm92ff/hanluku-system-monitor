@@ -3,7 +3,8 @@ setlocal EnableExtensions
 
 pushd "%~dp0"
 
-set "APP_NAME=SystemMonitorOverlay"
+set "DEFAULT_APP_NAME=Hanluku_system_monitor_v1.0-beta"
+set "APP_NAME=%DEFAULT_APP_NAME%"
 set "BUILD_SCRIPT=build_exe.bat"
 set "DEFAULT_EXE=%APP_NAME%.exe"
 set "SCRIPT_NAME=%~nx0"
@@ -97,7 +98,15 @@ if not "%TAG_NAME: =%"=="%TAG_NAME%" (
     goto :fail
 )
 
+set "APP_NAME=Hanluku_system_monitor_%TAG_NAME%"
+if defined APP_NAME_OVERRIDE set "APP_NAME=%APP_NAME_OVERRIDE%"
+if /I not "%SKIP_APP_NAME_PROMPT%"=="Y" (
+    call :prompt_with_default "EXE name without .exe:" "Release EXE Name" "%APP_NAME%" APP_NAME
+)
+call :normalize_app_name APP_NAME
+set "DEFAULT_EXE=%APP_NAME%.exe"
 >> "%LOG_FILE%" echo([%date% %time%] Tag entered: %TAG_NAME%
+>> "%LOG_FILE%" echo([%date% %time%] EXE name selected: %APP_NAME%
 call :prompt_yes_no "Build the EXE now" "N" DO_BUILD
 call :prompt_yes_no "Create a ZIP archive with the EXE" "N" DO_ZIP
 call :prompt_yes_no "Create a GitHub release for this tag" "N" DO_RELEASE
@@ -159,11 +168,16 @@ if /I "%DO_BUILD%"=="Y" (
 
     if /I "%DRY_RUN%"=="Y" (
         echo [DRY RUN] Would run: %BUILD_SCRIPT%
+        echo [DRY RUN] Output EXE: %DEFAULT_EXE%
         >> "%LOG_FILE%" echo([%date% %time%] Dry run: simulated EXE build.
     ) else (
+        set "APP_NAME_OVERRIDE=%APP_NAME%"
+        set "SKIP_APP_NAME_PROMPT=Y"
         set "NO_PAUSE=1"
         call "%BUILD_SCRIPT%"
         set "NO_PAUSE="
+        set "SKIP_APP_NAME_PROMPT="
+        set "APP_NAME_OVERRIDE="
         if errorlevel 1 (
             set "ERROR_MESSAGE=ERROR: EXE build failed."
             goto :fail
@@ -172,10 +186,11 @@ if /I "%DO_BUILD%"=="Y" (
     )
 )
 
+if /I "%DO_ZIP%"=="Y" set "ZIP_FILE=%APP_NAME%.zip"
+
 if /I "%DO_ZIP%"=="Y" (
     echo.
     echo ===== Create ZIP =====
-    set "ZIP_FILE=%APP_NAME%-%TAG_NAME%.zip"
     >> "%LOG_FILE%" echo([%date% %time%] Entering ZIP stage. Target: %ZIP_FILE%
     if /I "%DRY_RUN%"=="Y" (
         echo [DRY RUN] Would create ZIP: %ZIP_FILE%
@@ -441,6 +456,22 @@ if not "%PS_ERROR%"=="0" (
 )
 
 >> "%LOG_FILE%" echo([%date% %time%] GitHub release created successfully via token.
+exit /b 0
+
+:prompt_with_default
+set "PROMPT_RESULT="
+for /f "usebackq delims=" %%R in (`powershell -NoProfile -Command "Add-Type -AssemblyName Microsoft.VisualBasic | Out-Null; $value = [Microsoft.VisualBasic.Interaction]::InputBox('%~1','%~2','%~3'); if ($null -ne $value) { [Console]::Write($value) }"`) do set "PROMPT_RESULT=%%R"
+if not defined PROMPT_RESULT set "PROMPT_RESULT=%~3"
+set "%~4=%PROMPT_RESULT%"
+exit /b 0
+
+:normalize_app_name
+call set "NORMALIZED_VALUE=%%%~1%%"
+setlocal EnableDelayedExpansion
+set "NORMALIZED_VALUE=!NORMALIZED_VALUE:"=!"
+if /I "!NORMALIZED_VALUE:~-4!"==".exe" set "NORMALIZED_VALUE=!NORMALIZED_VALUE:~0,-4!"
+if not defined NORMALIZED_VALUE set "NORMALIZED_VALUE=%DEFAULT_APP_NAME%"
+endlocal & set "%~1=%NORMALIZED_VALUE%"
 exit /b 0
 
 :fail

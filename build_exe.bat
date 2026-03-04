@@ -3,8 +3,18 @@ setlocal EnableExtensions
 
 pushd "%~dp0"
 
-set "APP_NAME=SystemMonitorOverlay"
+set "DEFAULT_APP_NAME=Hanluku_system_monitor_v1.0-beta"
+if defined APP_NAME_OVERRIDE (
+    set "APP_NAME=%APP_NAME_OVERRIDE%"
+) else (
+    set "APP_NAME=%DEFAULT_APP_NAME%"
+)
 set "PYI=py -3 -m PyInstaller"
+
+if /I not "%SKIP_APP_NAME_PROMPT%"=="Y" (
+    call :prompt_with_default "EXE name without .exe:" "Build EXE Name" "%APP_NAME%" APP_NAME
+)
+call :normalize_app_name APP_NAME
 
 echo Building %APP_NAME%...
 echo.
@@ -106,7 +116,24 @@ if exist "dist" rmdir /s /q "dist"
 if exist "__pycache__" rmdir /s /q "__pycache__"
 
 echo.
-echo Build complete. The executable is next to this batch file.
+echo Build complete. Created %APP_NAME%.exe next to this batch file.
 
 popd
 if not defined NO_PAUSE pause
+exit /b 0
+
+:prompt_with_default
+set "PROMPT_RESULT="
+for /f "usebackq delims=" %%R in (`powershell -NoProfile -Command "Add-Type -AssemblyName Microsoft.VisualBasic | Out-Null; $value = [Microsoft.VisualBasic.Interaction]::InputBox('%~1','%~2','%~3'); if ($null -ne $value) { [Console]::Write($value) }"`) do set "PROMPT_RESULT=%%R"
+if not defined PROMPT_RESULT set "PROMPT_RESULT=%~3"
+set "%~4=%PROMPT_RESULT%"
+exit /b 0
+
+:normalize_app_name
+call set "NORMALIZED_VALUE=%%%~1%%"
+setlocal EnableDelayedExpansion
+set "NORMALIZED_VALUE=!NORMALIZED_VALUE:"=!"
+if /I "!NORMALIZED_VALUE:~-4!"==".exe" set "NORMALIZED_VALUE=!NORMALIZED_VALUE:~0,-4!"
+if not defined NORMALIZED_VALUE set "NORMALIZED_VALUE=%DEFAULT_APP_NAME%"
+endlocal & set "%~1=%NORMALIZED_VALUE%"
+exit /b 0

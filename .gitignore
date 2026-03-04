@@ -6,9 +6,7 @@ tests/
 *.pyc
 *.spec
 *.bat
-!build_exe.bat
-!release_to_github.bat
-!add_gh_to_path.bat
+# Example: use !release_to_github.bat below this line to re-include that file.
 *.log
 client_secret*.json
 test.bmp

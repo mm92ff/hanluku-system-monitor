@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING, Optional, Callable
 from functools import partial
 
 from PySide6.QtWidgets import (
-    QApplication, QInputDialog, QMessageBox, QFileDialog
+    QApplication, QDialog, QDialogButtonBox, QFileDialog, QInputDialog, QLabel,
+    QMessageBox, QSlider, QVBoxLayout
 )
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 
 from config.config import CONFIG_DIR
 from config.constants import SettingsKey
@@ -25,7 +26,6 @@ from ui.widgets.sensor_diagnosis_window import SensorDiagnosisWindow
 from ui.widgets.health_status_window import HealthStatusWindow
 from ui.widgets.label_editor_window import LabelEditorWindow
 from ui.widgets.performance_settings_window import PerformanceSettingsWindow
-from ui.widgets.font_settings_window import FontSettingsWindow
 from ui.widgets.misc_settings_window import MiscSettingsWindow
 from ui.widgets.widget_settings_window import WidgetSettingsWindow
 from ui.widgets.custom_sensor_management_window import CustomSensorManagementWindow
@@ -53,7 +53,6 @@ class ActionHandler:
         self.health_status_window: Optional[HealthStatusWindow] = None
         self.label_editor_window: Optional[LabelEditorWindow] = None
         self.performance_settings_window: Optional[PerformanceSettingsWindow] = None
-        self.font_settings_window: Optional[FontSettingsWindow] = None
         self.misc_settings_window: Optional[MiscSettingsWindow] = None
         self.widget_settings_window: Optional[WidgetSettingsWindow] = None
         self.custom_sensor_management_window: Optional[CustomSensorManagementWindow] = None
@@ -67,7 +66,6 @@ class ActionHandler:
             ("health_status_window", HealthStatusWindow),
             ("label_editor_window", LabelEditorWindow),
             ("performance_settings_window", PerformanceSettingsWindow),
-            ("font_settings_window", FontSettingsWindow),
             ("misc_settings_window", MiscSettingsWindow),
             ("widget_settings_window", WidgetSettingsWindow),
             ("custom_sensor_management_window", CustomSensorManagementWindow),
@@ -79,6 +77,89 @@ class ActionHandler:
         """Öffnet einen Dialog, um die Breite eines Widgets manuell einzustellen."""
         manager = self.main_win.detachable_manager
         manager.show_widget_width_adjuster(metric_key)
+
+    def show_set_stack_width_dialog(self, metric_key: str):
+        """Öffnet einen Dialog, um die Breite eines Stack-Clusters anzupassen."""
+        manager = self.main_win.detachable_manager
+        if not hasattr(manager, "is_horizontal_stack_group") or not manager.is_horizontal_stack_group(metric_key):
+            return
+
+        current_width = manager.get_stack_reference_width(metric_key)
+        if current_width is None:
+            return
+        original_widths = manager.get_group_widths(metric_key)
+        if not original_widths:
+            return
+
+        min_width = int(
+            self.settings_manager.get_setting(SettingsKey.WIDGET_MIN_WIDTH.value, 50)
+        )
+        max_width = int(
+            self.settings_manager.get_setting(SettingsKey.WIDGET_MAX_WIDTH.value, 2000)
+        )
+        if min_width > max_width:
+            min_width, max_width = max_width, min_width
+        max_width = max(max_width, current_width)
+
+        new_width = self._show_stack_width_slider_dialog(
+            self.translator.translate("dlg_title_set_stack_width"),
+            self.translator.translate("dlg_label_set_stack_width"),
+            int(current_width),
+            int(min_width),
+            int(max_width),
+            on_value_changed=lambda value: manager.preview_stack_width(metric_key, value),
+            on_cancel=lambda: manager.preview_widget_widths(original_widths),
+        )
+        if new_width is None:
+            return
+
+        manager.set_stack_width(metric_key, int(new_width))
+
+    def _show_stack_width_slider_dialog(
+        self,
+        title: str,
+        label_text: str,
+        current_width: int,
+        min_width: int,
+        max_width: int,
+        on_value_changed: Optional[Callable[[int], None]] = None,
+        on_cancel: Optional[Callable[[], None]] = None,
+    ) -> Optional[int]:
+        dialog = QDialog(self.main_win)
+        dialog.setWindowTitle(title)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(label_text, dialog))
+
+        value_label = QLabel(f"{int(current_width)} px", dialog)
+        layout.addWidget(value_label)
+
+        slider = QSlider(Qt.Orientation.Horizontal, dialog)
+        slider.setRange(int(min_width), int(max_width))
+        slider.setValue(int(current_width))
+
+        def _on_slider_value_changed(value: int):
+            value_label.setText(f"{int(value)} px")
+            if callable(on_value_changed):
+                on_value_changed(int(value))
+
+        slider.valueChanged.connect(_on_slider_value_changed)
+        layout.addWidget(slider)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            if callable(on_cancel):
+                on_cancel()
+            return None
+        return int(slider.value())
 
 
     def _show_single_instance_window(self, attr_name: str, window_class):
@@ -541,7 +622,7 @@ class ActionHandler:
             self.settings_manager.set_setting(SettingsKey.LOG_BACKUP_COUNT.value, new_value)
 
     # Fenster-Dialoge
-    def show_font_dialog(self): self._show_single_instance_window('font_settings_window', FontSettingsWindow)
+    def show_font_dialog(self): self.show_widget_settings_window()
     def show_reorder_window(self):
         if not self.main_win.detachable_manager.are_all_widgets_in_single_stack():
             QMessageBox.warning(

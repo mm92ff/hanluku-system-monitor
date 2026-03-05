@@ -248,7 +248,6 @@ class TrayMenuBuilder:
         settings_menu.addSeparator()
 
         settings_menu.addAction(self.translator.translate("menu_config_reorder"), self.action_handler.show_reorder_window)
-        settings_menu.addAction(self.translator.translate("menu_config_font"), self.action_handler.show_font_dialog)
         settings_menu.addAction(self.translator.translate("menu_config_labels"), self.action_handler.show_label_editor_window)
         settings_menu.addSeparator()
         settings_menu.addAction(self.translator.translate("menu_config_misc"), self.action_handler.show_misc_settings_window)

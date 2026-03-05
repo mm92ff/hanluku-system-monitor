@@ -1,14 +1,15 @@
 # ui/widgets/widget_settings_window.py
 from __future__ import annotations
+from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGroupBox, QSlider, QLabel, QHBoxLayout,
     QRadioButton, QDialogButtonBox, QDoubleSpinBox, QSpinBox,
-    QCheckBox
+    QCheckBox, QComboBox
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QFont, QFontDatabase, QFontMetrics
 
 from config.constants import SettingsKey
 from .base_window import SafeDialog, configure_dialog_layout, configure_dialog_window, style_dialog_button
@@ -29,18 +30,25 @@ class WidgetSettingsWindow(SafeDialog):
         self.settings_manager = main_window.settings_manager
         self.detachable_manager = main_window.detachable_manager
         self.translator = main_window.translator
+        self.loaded_fonts: Dict[str, str] = {}
         self._original_settings: Dict[str, object] = {}
         self._original_widths: Dict[str, int] = {}
         self._preview_width_override: Optional[int] = None
+        self._width_override_base_widths: Optional[Dict[str, int]] = None
+        self._width_override_base_average: Optional[int] = None
+        self._scaled_preview_widths: Optional[Dict[str, int]] = None
         self._suspend_auto_width_scaling = False
-        self._last_font_size_for_auto_width = int(
-            self.settings_manager.get_setting(SettingsKey.FONT_SIZE.value, 10)
+        self._last_font_signature_for_auto_width = (
+            str(self.settings_manager.get_setting(SettingsKey.FONT_FAMILY.value, "Consolas")),
+            int(self.settings_manager.get_setting(SettingsKey.FONT_SIZE.value, 10)),
+            str(self.settings_manager.get_setting(SettingsKey.FONT_WEIGHT.value, "normal")),
         )
         self._closing_with_commit = False
 
         self.setWindowTitle(self.translator.translate("win_title_widget_settings"))
-        configure_dialog_window(self, 560, 520, min_width=500, min_height=420)
+        configure_dialog_window(self, 560, 580, min_width=500, min_height=460)
 
+        self._load_local_fonts()
         self._setup_ui()
         self._load_settings()
         self._original_settings = self._collect_dialog_settings()
@@ -58,9 +66,41 @@ class WidgetSettingsWindow(SafeDialog):
         settings_layout.setSpacing(10)
 
         # -- Schrift & Balken --
+        self.font_family_combo = QComboBox()
+        self.font_family_combo.addItems(self._get_available_fonts())
+        settings_layout.addLayout(
+            self._create_setting_row(
+                self.translator.translate("win_font_family"),
+                self.font_family_combo,
+            )
+        )
+
+        self.fira_code_variant_combo = QComboBox()
+        self._populate_fira_code_variant_combo()
+        settings_layout.addLayout(
+            self._create_setting_row(
+                self.translator.translate("widget_settings_firacode_variant"),
+                self.fira_code_variant_combo,
+            )
+        )
+        self.fira_code_note_label = QLabel(
+            self.translator.translate("widget_settings_firacode_builtin_note")
+        )
+        self.fira_code_note_label.setWordWrap(True)
+        self.fira_code_note_label.setStyleSheet("color: #8fd18f;")
+        settings_layout.addWidget(self.fira_code_note_label)
+
         self.font_size_slider = self._create_slider(6, 24)
         settings_layout.addLayout(self._create_setting_row(
             self.translator.translate("widget_settings_font_size"), self.font_size_slider
+        ))
+
+        self.font_bold_checkbox = QCheckBox(self.translator.translate("win_font_bold"))
+        bold_row = QHBoxLayout()
+        bold_row.addWidget(self.font_bold_checkbox)
+        bold_row.addStretch()
+        settings_layout.addLayout(self._create_setting_row(
+            self.translator.translate("win_font_style"), bold_row
         ))
         
         self.show_bar_checkbox = QCheckBox(self.translator.translate("widget_settings_show_bar_graph"))
@@ -170,9 +210,106 @@ class WidgetSettingsWindow(SafeDialog):
             layout.addLayout(widget)
         return layout
 
+    def _load_local_fonts(self):
+        fonts_dir = Path(__file__).resolve().parents[2] / "assets" / "fonts"
+        if not fonts_dir.exists():
+            return
+
+        for font_file in fonts_dir.glob("*.ttf"):
+            font_id = QFontDatabase.addApplicationFont(str(font_file))
+            if font_id == -1:
+                continue
+            for family in QFontDatabase.applicationFontFamilies(font_id):
+                self.loaded_fonts[family] = str(font_file)
+
+    def _get_available_fonts(self) -> list[str]:
+        try:
+            system_families = list(QFontDatabase.families())
+        except TypeError:
+            system_families = list(QFontDatabase().families())
+
+        all_fonts = sorted(set(system_families + list(self.loaded_fonts.keys())))
+        if not all_fonts:
+            return ["Consolas"]
+        return all_fonts
+
+    def _get_fira_code_variants(self) -> list[str]:
+        variants = [
+            family
+            for family in self._get_available_fonts()
+            if family.lower().startswith("fira code") or family.lower().startswith("firacode")
+        ]
+        return sorted(set(variants), key=str.casefold)
+
+    def _populate_fira_code_variant_combo(self):
+        prompt = self.translator.translate("widget_settings_firacode_variant_prompt")
+        was_blocked = self.fira_code_variant_combo.blockSignals(True)
+        self.fira_code_variant_combo.clear()
+        self.fira_code_variant_combo.addItem(prompt, "")
+        for family in self._get_fira_code_variants():
+            self.fira_code_variant_combo.addItem(family, family)
+        self.fira_code_variant_combo.blockSignals(was_blocked)
+        self._sync_fira_code_variant_selection()
+
+    def _sync_fira_code_variant_selection(self):
+        current_family = self.font_family_combo.currentText()
+        index = self.fira_code_variant_combo.findData(current_family)
+        was_blocked = self.fira_code_variant_combo.blockSignals(True)
+        self.fira_code_variant_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.fira_code_variant_combo.blockSignals(was_blocked)
+
+    def _set_font_family_by_candidates(self, candidates: list[str]) -> bool:
+        for family in candidates:
+            index = self.font_family_combo.findText(family)
+            if index >= 0:
+                self.font_family_combo.setCurrentIndex(index)
+                return True
+        return False
+
+    def _on_fira_code_variant_changed(self, index: int):
+        family = str(self.fira_code_variant_combo.itemData(index) or "")
+        if not family:
+            return
+        self._set_font_family_by_candidates([family])
+
+    def _get_current_font_signature(self) -> tuple[str, int, str]:
+        return (
+            self.font_family_combo.currentText(),
+            int(self.font_size_slider.value()),
+            "bold" if self.font_bold_checkbox.isChecked() else "normal",
+        )
+
+    def _calculate_font_width_ratio(
+        self,
+        previous_signature: tuple[str, int, str],
+        current_signature: tuple[str, int, str],
+    ) -> float:
+        previous_family, previous_size, previous_weight = previous_signature
+        current_family, current_size, current_weight = current_signature
+
+        old_font = QFont(previous_family, max(6, int(previous_size)))
+        old_font.setBold(str(previous_weight).lower() == "bold")
+        current_font = QFont(current_family, max(6, int(current_size)))
+        current_font.setBold(str(current_weight).lower() == "bold")
+
+        reference_text = "CPU: 100.0% R:999.9 W:999.9 MB/s UP999.9 DOWN999.9 MBit/s"
+        old_width = max(1, QFontMetrics(old_font).horizontalAdvance(reference_text))
+        current_width = max(1, QFontMetrics(current_font).horizontalAdvance(reference_text))
+        return current_width / old_width
+
     def _load_settings(self):
         """Lädt alle Einstellungen und setzt die UI-Elemente."""
+        current_font_family = self.settings_manager.get_setting(
+            SettingsKey.FONT_FAMILY.value, "Consolas"
+        )
+        if self.font_family_combo.findText(current_font_family) == -1:
+            self.font_family_combo.addItem(current_font_family)
+        self.font_family_combo.setCurrentText(current_font_family)
+
         self.font_size_slider.setValue(self.settings_manager.get_setting(SettingsKey.FONT_SIZE.value, 10))
+        self.font_bold_checkbox.setChecked(
+            self.settings_manager.get_setting(SettingsKey.FONT_WEIGHT.value, "normal") == "bold"
+        )
         self.show_bar_checkbox.setChecked(self.settings_manager.get_setting(SettingsKey.SHOW_BAR_GRAPHS.value, True))
         self.bar_width_slider.setValue(self.settings_manager.get_setting(SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value, 9))
         self.bar_height_spinbox.setValue(
@@ -199,7 +336,8 @@ class WidgetSettingsWindow(SafeDialog):
         self.padding_bottom_spin.setValue(self.settings_manager.get_setting(SettingsKey.WIDGET_PADDING_BOTTOM.value, 2))
 
         self._on_padding_mode_changed()
-        self._last_font_size_for_auto_width = self.font_size_slider.value()
+        self._sync_fira_code_variant_selection()
+        self._last_font_signature_for_auto_width = self._get_current_font_signature()
 
     def _collect_dialog_settings(self) -> Dict[str, object]:
         min_width = self.min_width_spinbox.value()
@@ -208,7 +346,11 @@ class WidgetSettingsWindow(SafeDialog):
             max_width = min_width
 
         return {
+            SettingsKey.FONT_FAMILY.value: self.font_family_combo.currentText(),
             SettingsKey.FONT_SIZE.value: self.font_size_slider.value(),
+            SettingsKey.FONT_WEIGHT.value: (
+                "bold" if self.font_bold_checkbox.isChecked() else "normal"
+            ),
             SettingsKey.SHOW_BAR_GRAPHS.value: self.show_bar_checkbox.isChecked(),
             SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value: self.bar_width_slider.value(),
             SettingsKey.BAR_GRAPH_HEIGHT_FACTOR.value: self.bar_height_spinbox.value(),
@@ -225,6 +367,10 @@ class WidgetSettingsWindow(SafeDialog):
         }
 
     def _restore_original_live_state(self):
+        self._preview_width_override = None
+        self._width_override_base_widths = None
+        self._width_override_base_average = None
+        self._scaled_preview_widths = None
         self.detachable_manager.preview_widget_appearance(self._original_settings)
         self.detachable_manager.preview_widget_widths(self._original_widths)
 
@@ -233,6 +379,12 @@ class WidgetSettingsWindow(SafeDialog):
         if active_widths:
             return int(round(sum(active_widths) / len(active_widths)))
         return self.min_width_spinbox.value()
+
+    @staticmethod
+    def _get_average_width(widths: Dict[str, int]) -> int:
+        if not widths:
+            return 0
+        return int(round(sum(widths.values()) / len(widths)))
 
     def _sync_widget_width_slider_range(self):
         min_width = self.min_width_spinbox.value()
@@ -246,14 +398,52 @@ class WidgetSettingsWindow(SafeDialog):
 
         if self._preview_width_override is not None:
             self._preview_width_override = current_value
+        if self._scaled_preview_widths is not None:
+            self._scaled_preview_widths = {
+                key: self._clamp_width_to_range(width)
+                for key, width in self._scaled_preview_widths.items()
+            }
+            if self._scaled_preview_widths:
+                average_width = int(
+                    round(
+                        sum(self._scaled_preview_widths.values())
+                        / len(self._scaled_preview_widths)
+                    )
+                )
+                average_width = self._clamp_width_to_range(average_width)
+                was_blocked = self.widget_width_slider.blockSignals(True)
+                self.widget_width_slider.setValue(average_width)
+                self.widget_width_slider.blockSignals(was_blocked)
 
     def _get_preview_widths(self) -> Dict[str, int]:
         settings = self._collect_dialog_settings()
         min_width = int(settings[SettingsKey.WIDGET_MIN_WIDTH.value])
         max_width = int(settings[SettingsKey.WIDGET_MAX_WIDTH.value])
         if self._preview_width_override is not None:
-            uniform_width = max(min_width, min(max_width, self._preview_width_override))
-            return {key: uniform_width for key in self._original_widths}
+            base_widths = (
+                self._width_override_base_widths
+                if self._width_override_base_widths is not None
+                else (
+                    self._scaled_preview_widths
+                    if self._scaled_preview_widths is not None
+                    else self._original_widths
+                )
+            )
+            base_average = (
+                self._width_override_base_average
+                if self._width_override_base_average is not None
+                else self._get_average_width(base_widths)
+            )
+            delta = int(self._preview_width_override) - int(base_average)
+            return {
+                key: max(min_width, min(max_width, int(width) + delta))
+                for key, width in base_widths.items()
+            }
+        if self._scaled_preview_widths is not None:
+            return {
+                key: max(min_width, min(max_width, width))
+                for key, width in self._scaled_preview_widths.items()
+            }
         return {
             key: max(min_width, min(max_width, width))
             for key, width in self._original_widths.items()
@@ -267,7 +457,12 @@ class WidgetSettingsWindow(SafeDialog):
     def _connect_signals(self):
         """Verbindet alle Signale mit den entsprechenden Slots."""
         # Allgemeine Einstellungen
+        self.fira_code_variant_combo.currentIndexChanged.connect(
+            self._on_fira_code_variant_changed
+        )
+        self.font_family_combo.currentTextChanged.connect(self._on_font_family_changed)
         self.font_size_slider.valueChanged.connect(self._on_font_size_changed)
+        self.font_bold_checkbox.toggled.connect(self._on_font_weight_changed)
         self.bar_width_slider.valueChanged.connect(self._update_preview)
         self.bar_height_spinbox.valueChanged.connect(self._update_preview)
         self.widget_width_slider.valueChanged.connect(self._on_widget_width_changed)
@@ -306,24 +501,80 @@ class WidgetSettingsWindow(SafeDialog):
         self._update_preview()
 
     def _on_widget_width_changed(self, value: int):
+        if self._preview_width_override is None:
+            base_widths = (
+                dict(self._scaled_preview_widths)
+                if self._scaled_preview_widths is not None
+                else self._get_preview_widths()
+            )
+            self._width_override_base_widths = {
+                key: int(width) for key, width in base_widths.items()
+            }
+            self._width_override_base_average = self._get_average_width(
+                self._width_override_base_widths
+            )
         self._preview_width_override = value
         self._update_preview()
 
-    def _on_font_size_changed(self, value: int):
-        previous_font_size = max(1, int(self._last_font_size_for_auto_width))
-        self._last_font_size_for_auto_width = int(value)
+    def _on_font_size_changed(self, _value: int):
+        self._on_font_signature_changed()
+
+    def _on_font_family_changed(self, _family: str):
+        self._sync_fira_code_variant_selection()
+        self._on_font_signature_changed()
+
+    def _on_font_weight_changed(self, _is_bold: bool):
+        self._on_font_signature_changed()
+
+    def _on_font_signature_changed(self):
+        previous_signature = self._last_font_signature_for_auto_width
+        current_signature = self._get_current_font_signature()
+        self._last_font_signature_for_auto_width = current_signature
         if self._suspend_auto_width_scaling:
             return
 
-        current_width = self.widget_width_slider.value()
-        scaled_width = int(round(current_width * (int(value) / previous_font_size)))
-        clamped_width = self._clamp_width_to_range(scaled_width)
+        ratio = self._calculate_font_width_ratio(previous_signature, current_signature)
+        if abs(ratio - 1.0) < 0.01:
+            self._update_preview()
+            return
 
-        was_blocked = self.widget_width_slider.blockSignals(True)
-        self.widget_width_slider.setValue(clamped_width)
-        self.widget_width_slider.blockSignals(was_blocked)
+        if self._preview_width_override is not None:
+            scaled_width = int(round(self._preview_width_override * ratio))
+            clamped_width = self._clamp_width_to_range(scaled_width)
+            was_blocked = self.widget_width_slider.blockSignals(True)
+            self.widget_width_slider.setValue(clamped_width)
+            self.widget_width_slider.blockSignals(was_blocked)
+            self._preview_width_override = clamped_width
+            if self._width_override_base_widths is not None:
+                self._width_override_base_widths = {
+                    key: self._clamp_width_to_range(int(round(width * ratio)))
+                    for key, width in self._width_override_base_widths.items()
+                }
+                self._width_override_base_average = self._get_average_width(
+                    self._width_override_base_widths
+                )
+        else:
+            base_widths = (
+                self._scaled_preview_widths
+                if self._scaled_preview_widths is not None
+                else self._get_preview_widths()
+            )
+            self._scaled_preview_widths = {
+                key: self._clamp_width_to_range(int(round(width * ratio)))
+                for key, width in base_widths.items()
+            }
+            if self._scaled_preview_widths:
+                average_width = int(
+                    round(
+                        sum(self._scaled_preview_widths.values())
+                        / len(self._scaled_preview_widths)
+                    )
+                )
+                average_width = self._clamp_width_to_range(average_width)
+                was_blocked = self.widget_width_slider.blockSignals(True)
+                self.widget_width_slider.setValue(average_width)
+                self.widget_width_slider.blockSignals(was_blocked)
 
-        self._preview_width_override = clamped_width
         self._update_preview()
 
     # GEÄNDERT: Verwendet .setEnabled() statt .setVisible()
@@ -347,7 +598,7 @@ class WidgetSettingsWindow(SafeDialog):
         self.settings_manager.update_settings(live_settings)
         self.detachable_manager.apply_styles_to_all_active_widgets()
         if self._preview_width_override is not None:
-            self.detachable_manager.set_uniform_widget_width(self.widget_width_slider.value())
+            self.detachable_manager.set_widget_widths(self._get_preview_widths())
         self._original_settings = dict(live_settings)
         self._original_widths = self.detachable_manager.get_active_widget_widths()
 
@@ -371,6 +622,17 @@ class WidgetSettingsWindow(SafeDialog):
             "dialog_settings": self._collect_dialog_settings(),
             "widget_width": self.widget_width_slider.value(),
             "preview_width_override": self._preview_width_override,
+            "width_override_base_widths": (
+                dict(self._width_override_base_widths)
+                if self._width_override_base_widths is not None
+                else None
+            ),
+            "width_override_base_average": self._width_override_base_average,
+            "scaled_preview_widths": (
+                dict(self._scaled_preview_widths)
+                if self._scaled_preview_widths is not None
+                else None
+            ),
             "original_settings": dict(self._original_settings),
             "original_widths": dict(self._original_widths),
         }
@@ -380,7 +642,22 @@ class WidgetSettingsWindow(SafeDialog):
 
         self._suspend_auto_width_scaling = True
         try:
+            family = str(
+                dialog_settings.get(
+                    SettingsKey.FONT_FAMILY.value,
+                    self.font_family_combo.currentText(),
+                )
+            )
+            if self.font_family_combo.findText(family) == -1:
+                self.font_family_combo.addItem(family)
+            self.font_family_combo.setCurrentText(family)
             self.font_size_slider.setValue(int(dialog_settings.get(SettingsKey.FONT_SIZE.value, self.font_size_slider.value())))
+            self.font_bold_checkbox.setChecked(
+                dialog_settings.get(
+                    SettingsKey.FONT_WEIGHT.value,
+                    "bold" if self.font_bold_checkbox.isChecked() else "normal",
+                ) == "bold"
+            )
             self.show_bar_checkbox.setChecked(bool(dialog_settings.get(SettingsKey.SHOW_BAR_GRAPHS.value, self.show_bar_checkbox.isChecked())))
             self.bar_width_slider.setValue(int(dialog_settings.get(SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value, self.bar_width_slider.value())))
             self.bar_height_spinbox.setValue(float(dialog_settings.get(SettingsKey.BAR_GRAPH_HEIGHT_FACTOR.value, self.bar_height_spinbox.value())))
@@ -400,7 +677,34 @@ class WidgetSettingsWindow(SafeDialog):
 
         self._sync_widget_width_slider_range()
         self._preview_width_override = state.get("preview_width_override")
-        self.widget_width_slider.setValue(int(state.get("widget_width", self.widget_width_slider.value())))
+        width_override_base_widths = state.get("width_override_base_widths")
+        if isinstance(width_override_base_widths, dict):
+            self._width_override_base_widths = {
+                str(key): int(width)
+                for key, width in width_override_base_widths.items()
+            }
+        else:
+            self._width_override_base_widths = None
+        width_override_base_average = state.get("width_override_base_average")
+        self._width_override_base_average = (
+            int(width_override_base_average)
+            if isinstance(width_override_base_average, (int, float))
+            else None
+        )
+        scaled_preview_widths = state.get("scaled_preview_widths")
+        if isinstance(scaled_preview_widths, dict):
+            self._scaled_preview_widths = {
+                str(key): int(width)
+                for key, width in scaled_preview_widths.items()
+            }
+        else:
+            self._scaled_preview_widths = None
+        was_blocked = self.widget_width_slider.blockSignals(True)
+        self.widget_width_slider.setValue(
+            int(state.get("widget_width", self.widget_width_slider.value()))
+        )
+        self.widget_width_slider.blockSignals(was_blocked)
         self._original_settings = dict(state.get("original_settings", self._original_settings))
         self._original_widths = dict(state.get("original_widths", self._original_widths))
+        self._last_font_signature_for_auto_width = self._get_current_font_signature()
         self._update_preview()

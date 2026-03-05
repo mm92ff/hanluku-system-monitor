@@ -752,7 +752,10 @@ class DetachableManager(QObject):
             min_width, max_width = max_width, min_width
 
         current_width = widget.width()
-        clamped_width = max(min_width, min(max_width, current_width))
+        content_min = widget.get_content_minimum_width()
+        effective_min = max(min_width, content_min)
+        effective_max = max(max_width, effective_min)
+        clamped_width = max(effective_min, min(effective_max, current_width))
         if clamped_width != current_width:
             widget.setFixedWidth(clamped_width)
 
@@ -793,20 +796,138 @@ class DetachableManager(QObject):
         def restore_widths():
             for key, width in widths.items():
                 if widget := self.active_widgets.get(key):
-                    widget.setFixedWidth(int(width))
+                    widget.setFixedWidth(self._clamp_widget_width(int(width), widget=widget))
             self._synchronize_group_layout()
 
         self._with_layout_updates_blocked(restore_widths)
 
     def set_uniform_widget_width(self, width: int):
-        width = self._clamp_widget_width(width)
         for widget in self.active_widgets.values():
-            widget.setFixedWidth(width)
+            widget.setFixedWidth(self._clamp_widget_width(width, widget=widget))
 
         QTimer.singleShot(0, self._synchronize_group_layout)
         self.layout_modified.emit()
 
-    def _clamp_widget_width(self, width: int) -> int:
+    def set_widget_widths(self, widths: Dict[str, int]):
+        def apply_widths():
+            for key, width in widths.items():
+                if widget := self.active_widgets.get(key):
+                    widget.setFixedWidth(
+                        self._clamp_widget_width(int(width), widget=widget)
+                    )
+            self._synchronize_group_layout()
+
+        self._with_layout_updates_blocked(apply_widths)
+        self.layout_modified.emit()
+
+    def get_stack_reference_width(self, metric_key: str) -> Optional[int]:
+        group_id = self.group_manager.get_group_id(metric_key)
+        if not group_id:
+            return None
+
+        group_info = self.group_manager.get_group_info(group_id)
+        if not group_info:
+            return None
+
+        widths = [
+            self.active_widgets[member_key].width()
+            for member_key in group_info.members
+            if member_key in self.active_widgets
+        ]
+        if not widths:
+            return None
+
+        return int(round(sum(widths) / len(widths)))
+
+    def is_horizontal_stack_group(self, metric_key: str) -> bool:
+        group_id = self.group_manager.get_group_id(metric_key)
+        if not group_id:
+            return False
+        group_info = self.group_manager.get_group_info(group_id)
+        if not group_info:
+            return False
+        if group_info.group_type == GroupType.NORMAL:
+            return True
+        if group_info.group_type == GroupType.STACK:
+            return not self._stack_group_uses_shared_width(metric_key)
+        return False
+
+    def set_stack_width(self, metric_key: str, target_width: int):
+        target_widths = self._build_group_target_widths(metric_key, target_width)
+        if target_widths is None:
+            return
+        self.set_widget_widths(target_widths)
+
+    def preview_stack_width(self, metric_key: str, target_width: int):
+        target_widths = self._build_group_target_widths(metric_key, target_width)
+        if target_widths is None:
+            return
+        self.preview_widget_widths(target_widths)
+
+    def get_group_widths(self, metric_key: str) -> Dict[str, int]:
+        group_id = self.group_manager.get_group_id(metric_key)
+        if not group_id:
+            return {}
+
+        group_info = self.group_manager.get_group_info(group_id)
+        if not group_info:
+            return {}
+
+        return {
+            member_key: self.active_widgets[member_key].width()
+            for member_key in group_info.members
+            if member_key in self.active_widgets
+        }
+
+    def _build_group_target_widths(
+        self,
+        metric_key: str,
+        target_width: int,
+    ) -> Optional[Dict[str, int]]:
+        group_id = self.group_manager.get_group_id(metric_key)
+        if not group_id:
+            return None
+
+        group_info = self.group_manager.get_group_info(group_id)
+        if not group_info:
+            return None
+
+        members = [
+            member_key
+            for member_key in group_info.members
+            if member_key in self.active_widgets
+        ]
+        if not members:
+            return None
+
+        if self._stack_group_uses_shared_width(metric_key):
+            shared_width = max(
+                (
+                    self._clamp_widget_width(target_width, widget=widget)
+                    for member_key in members
+                    for widget in [self.active_widgets.get(member_key)]
+                    if widget is not None
+                ),
+                default=self._clamp_widget_width(target_width),
+            )
+            return {member_key: shared_width for member_key in members}
+
+        current_widths = {
+            member_key: self.active_widgets[member_key].width()
+            for member_key in members
+        }
+        current_average = int(round(sum(current_widths.values()) / len(current_widths)))
+        delta = int(target_width) - current_average
+        return {
+            member_key: width + delta
+            for member_key, width in current_widths.items()
+        }
+
+    def _clamp_widget_width(
+        self,
+        width: int,
+        widget: Optional[DetachableWidget] = None,
+    ) -> int:
         min_width = self.main_win.settings_manager.get_setting(
             SettingsKey.WIDGET_MIN_WIDTH.value, 50
         )
@@ -815,7 +936,11 @@ class DetachableManager(QObject):
         )
         if int(min_width) > int(max_width):
             min_width, max_width = max_width, min_width
-        return max(int(min_width), min(int(max_width), int(width)))
+        effective_min = int(min_width)
+        if widget is not None:
+            effective_min = max(effective_min, widget.get_content_minimum_width())
+        effective_max = max(int(max_width), effective_min)
+        return max(effective_min, min(effective_max, int(width)))
 
     def hide_widget_width_adjusters(self, except_key: Optional[str] = None):
         for key, widget in self.active_widgets.items():
@@ -840,17 +965,26 @@ class DetachableManager(QObject):
         if not target_widget:
             return
 
-        width = self._clamp_widget_width(width)
         group_type = self.group_manager.get_group_type(metric_key)
 
         if group_type == GroupType.STACK and self._stack_group_uses_shared_width(metric_key):
             group_id = self.group_manager.get_group_id(metric_key)
             if group_id:
                 group_members = self.group_manager.get_group_members(group_id)
+                width = max(
+                    (
+                        self._clamp_widget_width(width, widget=widget)
+                        for member_key in group_members
+                        for widget in [self.active_widgets.get(member_key)]
+                        if widget is not None
+                    ),
+                    default=self._clamp_widget_width(width, widget=target_widget),
+                )
                 for member_key in group_members:
                     if widget := self.active_widgets.get(member_key):
                         widget.setFixedWidth(width)
         else:
+            width = self._clamp_widget_width(width, widget=target_widget)
             target_widget.setFixedWidth(width)
 
         was_blocked = self.blockSignals(True)
@@ -865,19 +999,27 @@ class DetachableManager(QObject):
         if not target_widget:
             return
 
-        width = self._clamp_widget_width(width)
-
         group_type = self.group_manager.get_group_type(metric_key)
         
         if group_type == GroupType.STACK and self._stack_group_uses_shared_width(metric_key):
             group_id = self.group_manager.get_group_id(metric_key)
             if group_id:
                 group_members = self.group_manager.get_group_members(group_id)
+                width = max(
+                    (
+                        self._clamp_widget_width(width, widget=widget)
+                        for member_key in group_members
+                        for widget in [self.active_widgets.get(member_key)]
+                        if widget is not None
+                    ),
+                    default=self._clamp_widget_width(width, widget=target_widget),
+                )
                 for member_key in group_members:
                     if widget := self.active_widgets.get(member_key):
                         widget.setFixedWidth(width)
                 logging.info(f"Breite für Stack-Gruppe mit '{metric_key}' auf {width}px gesetzt (alle {len(group_members)} Widgets)")
         else:
+            width = self._clamp_widget_width(width, widget=target_widget)
             target_widget.setFixedWidth(width)
             logging.info(f"Breite für '{metric_key}' individuell auf {width}px gesetzt")
 

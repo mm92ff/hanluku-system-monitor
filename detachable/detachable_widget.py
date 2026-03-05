@@ -7,7 +7,7 @@ from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QDrag, QFont, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QMenu, QWidget
 
-from config.constants import SettingsKey
+from config.constants import DisplayMode, SettingsKey
 from core.background_widget import BackgroundWidget
 from ui.bar_graph_widget import BarGraphWidget
 
@@ -129,6 +129,93 @@ class DetachableWidget(QWidget):
         self.value.setText(value_text)
         if self.bar:
             self.bar.setValue(percent_value)
+
+    def get_content_minimum_width(self) -> int:
+        label_text = self.label.text() or ""
+        value_text = self.value.text() or ""
+        reference_value_text = self._get_value_width_reference_text(value_text)
+
+        label_width = self.label.fontMetrics().horizontalAdvance(label_text)
+        value_width = self.value.fontMetrics().horizontalAdvance(reference_value_text)
+
+        margins = self.internal_layout.contentsMargins()
+        spacing = max(0, self.internal_layout.spacing())
+        item_count = self.internal_layout.count()
+
+        bar_width = 0
+        if self.bar and self.bar.isVisible():
+            bar_width = self.bar.width()
+
+        manual_min = (
+            margins.left()
+            + margins.right()
+            + label_width
+            + value_width
+            + bar_width
+            + max(0, item_count - 1) * spacing
+        )
+        layout_min = self.internal_layout.minimumSize().width()
+        background_min = self.background.minimumSizeHint().width()
+        return max(1, int(max(manual_min, layout_min, background_min)))
+
+    def _get_value_width_reference_text(self, current_value_text: str) -> str:
+        fallback = current_value_text or "..."
+        settings_manager = getattr(
+            getattr(self.manager, "main_win", None), "settings_manager", None
+        )
+
+        candidate = None
+        if self.metric_key == "net":
+            unit = "MBit/s"
+            mode = DisplayMode.BOTH.value
+            if settings_manager is not None:
+                unit = str(
+                    settings_manager.get_setting(
+                        SettingsKey.NETWORK_UNIT.value,
+                        unit,
+                    )
+                )
+                mode = str(
+                    settings_manager.get_setting(
+                        SettingsKey.NETWORK_DISPLAY_MODE.value,
+                        mode,
+                    )
+                ).lower()
+            if mode == DisplayMode.UP.value:
+                candidate = f"\u25B2999.9 {unit}"
+            elif mode == DisplayMode.DOWN.value:
+                candidate = f"\u25BC999.9 {unit}"
+            else:
+                candidate = f"\u25B2999.9 \u25BC999.9 {unit}"
+        elif self.metric_key == "disk_io":
+            unit = "MB/s"
+            mode = DisplayMode.BOTH.value
+            if settings_manager is not None:
+                unit = str(
+                    settings_manager.get_setting(
+                        SettingsKey.DISK_IO_UNIT.value,
+                        unit,
+                    )
+                )
+                mode = str(
+                    settings_manager.get_setting(
+                        SettingsKey.DISK_IO_DISPLAY_MODE.value,
+                        mode,
+                    )
+                ).lower()
+            if mode == DisplayMode.READ.value:
+                candidate = f"R:999.9 {unit}"
+            elif mode == DisplayMode.WRITE.value:
+                candidate = f"W:999.9 {unit}"
+            else:
+                candidate = f"R:999.9 W:999.9 {unit}"
+
+        if not candidate:
+            return fallback
+
+        current_width = self.value.fontMetrics().horizontalAdvance(fallback)
+        candidate_width = self.value.fontMetrics().horizontalAdvance(candidate)
+        return candidate if candidate_width > current_width else fallback
 
     def update_style(
         self,
@@ -271,6 +358,45 @@ class DetachableWidget(QWidget):
             lambda: self.wants_to_set_width.emit(self.metric_key)
         )
         menu.addAction(set_width_action)
+
+        show_set_stack_width = getattr(
+            getattr(self.manager.main_win, "action_handler", None),
+            "show_set_stack_width_dialog",
+            None,
+        )
+        is_horizontal_stack_group = getattr(
+            self.manager,
+            "is_horizontal_stack_group",
+            None,
+        )
+        if callable(is_horizontal_stack_group):
+            show_stack_width_action = bool(
+                is_horizontal_stack_group(self.metric_key)
+            )
+        else:
+            show_stack_width_action = self.manager.group_manager.is_stack_group(
+                self.metric_key
+            )
+        if show_stack_width_action and callable(show_set_stack_width):
+            set_stack_width_action = QAction(
+                self.translator.translate("widget_ctx_menu_set_stack_width"), self
+            )
+            set_stack_width_action.triggered.connect(
+                lambda: show_set_stack_width(self.metric_key)
+            )
+            menu.addAction(set_stack_width_action)
+
+        show_widget_settings = getattr(
+            getattr(self.manager.main_win, "action_handler", None),
+            "show_widget_settings_window",
+            None,
+        )
+        if callable(show_widget_settings):
+            appearance_action = QAction(
+                self.translator.translate("menu_config_widget_appearance"), self
+            )
+            appearance_action.triggered.connect(show_widget_settings)
+            menu.addAction(appearance_action)
 
         hide_action = QAction(self.translator.translate("widget_ctx_menu_hide"), self)
         hide_action.triggered.connect(lambda: self.wants_to_hide.emit(self.metric_key))

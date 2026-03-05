@@ -2,7 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
-The latest tagged version currently available in the repository is `v1.0-beta`.
+The latest tagged version currently available in the repository is `v1.1.0-beta`.
+
+## [Unreleased]
+
+### Changed
+
+- Merged font controls into `Customize Widget Appearance`, including `Font`, `Font Size`, and `Bold`.
+- Added a quick-select dropdown for built-in `Fira Code` variants plus an in-dialog note that `Fira Code` fonts are bundled with the app.
+- Widget width preview now auto-scales when font size, font family, or font weight changes.
+- Width changes from `Widget Width` in `Customize Widget Appearance` now keep per-widget width differences in horizontal stacks instead of resetting members to one uniform fallback width.
+- Added content-aware minimum width clamping so widget width cannot shrink below visible text requirements, preventing label/value overlap.
+- Content minimum width for dynamic value widgets (for example `Network` and `Disk I/O`) now respects display mode, so hidden value parts no longer force unnecessary minimum width.
+- Added `Widget Appearance...` to the widget right-click menu for faster access.
+- Added `Stack Width...` in the widget right-click menu for horizontal stack groups.
+- `Stack Width...` now uses a slider dialog with live width preview while dragging and restore-on-cancel behavior.
+
+### Removed
+
+- Removed the separate `Font Settings` dialog window.
+- Removed the standalone `Font...` tray menu entry from Display Settings.
 
 ## [v1.1.0-beta]
 

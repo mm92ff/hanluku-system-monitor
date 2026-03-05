@@ -124,6 +124,7 @@ class HelpWindow(SafeWindow):
             <li><b>{t("help_other_item3_title")}:</b> {t("help_other_item3_desc")}</li>
             <li><b>{t("help_other_item4_title")}:</b> {t("help_other_item4_desc")}</li>
             <li><b>{t("help_other_item5_title")}:</b> {t("help_other_item5_desc")}</li>
+            <li><b>{t("help_other_item6_title")}:</b> {t("help_other_item6_desc")}</li>
         </ul>
 
         <br><hr><br>

@@ -123,6 +123,12 @@ class WidgetSettingsWindow(SafeDialog):
         settings_layout.addLayout(self._create_setting_row(
             self.translator.translate("widget_settings_widget_width"), self.widget_width_slider
         ))
+        self.widget_width_note_label = QLabel(
+            self.translator.translate("widget_settings_widget_width_note")
+        )
+        self.widget_width_note_label.setWordWrap(True)
+        self.widget_width_note_label.setStyleSheet("color: #9aa4b2;")
+        settings_layout.addLayout(self._create_setting_row("", self.widget_width_note_label))
 
         self.min_width_spinbox = QSpinBox()
         self.min_width_spinbox.setRange(10, 1000)

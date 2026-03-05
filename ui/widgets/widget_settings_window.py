@@ -32,6 +32,10 @@ class WidgetSettingsWindow(SafeDialog):
         self._original_settings: Dict[str, object] = {}
         self._original_widths: Dict[str, int] = {}
         self._preview_width_override: Optional[int] = None
+        self._suspend_auto_width_scaling = False
+        self._last_font_size_for_auto_width = int(
+            self.settings_manager.get_setting(SettingsKey.FONT_SIZE.value, 10)
+        )
         self._closing_with_commit = False
 
         self.setWindowTitle(self.translator.translate("win_title_widget_settings"))
@@ -195,6 +199,7 @@ class WidgetSettingsWindow(SafeDialog):
         self.padding_bottom_spin.setValue(self.settings_manager.get_setting(SettingsKey.WIDGET_PADDING_BOTTOM.value, 2))
 
         self._on_padding_mode_changed()
+        self._last_font_size_for_auto_width = self.font_size_slider.value()
 
     def _collect_dialog_settings(self) -> Dict[str, object]:
         min_width = self.min_width_spinbox.value()
@@ -254,10 +259,15 @@ class WidgetSettingsWindow(SafeDialog):
             for key, width in self._original_widths.items()
         }
 
+    def _clamp_width_to_range(self, width: int) -> int:
+        min_width = self.min_width_spinbox.value()
+        max_width = max(min_width, self.max_width_spinbox.value())
+        return max(min_width, min(max_width, int(width)))
+
     def _connect_signals(self):
         """Verbindet alle Signale mit den entsprechenden Slots."""
         # Allgemeine Einstellungen
-        self.font_size_slider.valueChanged.connect(self._update_preview)
+        self.font_size_slider.valueChanged.connect(self._on_font_size_changed)
         self.bar_width_slider.valueChanged.connect(self._update_preview)
         self.bar_height_spinbox.valueChanged.connect(self._update_preview)
         self.widget_width_slider.valueChanged.connect(self._on_widget_width_changed)
@@ -297,6 +307,23 @@ class WidgetSettingsWindow(SafeDialog):
 
     def _on_widget_width_changed(self, value: int):
         self._preview_width_override = value
+        self._update_preview()
+
+    def _on_font_size_changed(self, value: int):
+        previous_font_size = max(1, int(self._last_font_size_for_auto_width))
+        self._last_font_size_for_auto_width = int(value)
+        if self._suspend_auto_width_scaling:
+            return
+
+        current_width = self.widget_width_slider.value()
+        scaled_width = int(round(current_width * (int(value) / previous_font_size)))
+        clamped_width = self._clamp_width_to_range(scaled_width)
+
+        was_blocked = self.widget_width_slider.blockSignals(True)
+        self.widget_width_slider.setValue(clamped_width)
+        self.widget_width_slider.blockSignals(was_blocked)
+
+        self._preview_width_override = clamped_width
         self._update_preview()
 
     # GEÄNDERT: Verwendet .setEnabled() statt .setVisible()
@@ -351,21 +378,25 @@ class WidgetSettingsWindow(SafeDialog):
     def apply_language_refresh_state(self, state: Dict[str, object]):
         dialog_settings = state.get("dialog_settings", {})
 
-        self.font_size_slider.setValue(int(dialog_settings.get(SettingsKey.FONT_SIZE.value, self.font_size_slider.value())))
-        self.show_bar_checkbox.setChecked(bool(dialog_settings.get(SettingsKey.SHOW_BAR_GRAPHS.value, self.show_bar_checkbox.isChecked())))
-        self.bar_width_slider.setValue(int(dialog_settings.get(SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value, self.bar_width_slider.value())))
-        self.bar_height_spinbox.setValue(float(dialog_settings.get(SettingsKey.BAR_GRAPH_HEIGHT_FACTOR.value, self.bar_height_spinbox.value())))
-        self.min_width_spinbox.setValue(int(dialog_settings.get(SettingsKey.WIDGET_MIN_WIDTH.value, self.min_width_spinbox.value())))
-        self.max_width_spinbox.setValue(int(dialog_settings.get(SettingsKey.WIDGET_MAX_WIDTH.value, self.max_width_spinbox.value())))
+        self._suspend_auto_width_scaling = True
+        try:
+            self.font_size_slider.setValue(int(dialog_settings.get(SettingsKey.FONT_SIZE.value, self.font_size_slider.value())))
+            self.show_bar_checkbox.setChecked(bool(dialog_settings.get(SettingsKey.SHOW_BAR_GRAPHS.value, self.show_bar_checkbox.isChecked())))
+            self.bar_width_slider.setValue(int(dialog_settings.get(SettingsKey.BAR_GRAPH_WIDTH_MULTIPLIER.value, self.bar_width_slider.value())))
+            self.bar_height_spinbox.setValue(float(dialog_settings.get(SettingsKey.BAR_GRAPH_HEIGHT_FACTOR.value, self.bar_height_spinbox.value())))
+            self.min_width_spinbox.setValue(int(dialog_settings.get(SettingsKey.WIDGET_MIN_WIDTH.value, self.min_width_spinbox.value())))
+            self.max_width_spinbox.setValue(int(dialog_settings.get(SettingsKey.WIDGET_MAX_WIDTH.value, self.max_width_spinbox.value())))
 
-        padding_mode = dialog_settings.get(SettingsKey.WIDGET_PADDING_MODE.value, "factor")
-        self.padding_mode_factor_rb.setChecked(padding_mode == "factor")
-        self.padding_mode_pixels_rb.setChecked(padding_mode != "factor")
-        self.padding_factor_spinbox.setValue(float(dialog_settings.get(SettingsKey.WIDGET_PADDING_FACTOR.value, self.padding_factor_spinbox.value())))
-        self.padding_left_spin.setValue(int(dialog_settings.get(SettingsKey.WIDGET_PADDING_LEFT.value, self.padding_left_spin.value())))
-        self.padding_top_spin.setValue(int(dialog_settings.get(SettingsKey.WIDGET_PADDING_TOP.value, self.padding_top_spin.value())))
-        self.padding_right_spin.setValue(int(dialog_settings.get(SettingsKey.WIDGET_PADDING_RIGHT.value, self.padding_right_spin.value())))
-        self.padding_bottom_spin.setValue(int(dialog_settings.get(SettingsKey.WIDGET_PADDING_BOTTOM.value, self.padding_bottom_spin.value())))
+            padding_mode = dialog_settings.get(SettingsKey.WIDGET_PADDING_MODE.value, "factor")
+            self.padding_mode_factor_rb.setChecked(padding_mode == "factor")
+            self.padding_mode_pixels_rb.setChecked(padding_mode != "factor")
+            self.padding_factor_spinbox.setValue(float(dialog_settings.get(SettingsKey.WIDGET_PADDING_FACTOR.value, self.padding_factor_spinbox.value())))
+            self.padding_left_spin.setValue(int(dialog_settings.get(SettingsKey.WIDGET_PADDING_LEFT.value, self.padding_left_spin.value())))
+            self.padding_top_spin.setValue(int(dialog_settings.get(SettingsKey.WIDGET_PADDING_TOP.value, self.padding_top_spin.value())))
+            self.padding_right_spin.setValue(int(dialog_settings.get(SettingsKey.WIDGET_PADDING_RIGHT.value, self.padding_right_spin.value())))
+            self.padding_bottom_spin.setValue(int(dialog_settings.get(SettingsKey.WIDGET_PADDING_BOTTOM.value, self.padding_bottom_spin.value())))
+        finally:
+            self._suspend_auto_width_scaling = False
 
         self._sync_widget_width_slider_range()
         self._preview_width_override = state.get("preview_width_override")
